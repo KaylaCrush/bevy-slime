@@ -3,7 +3,8 @@ use bevy::{
     prelude::*,
     render::{
         render_resource::*,
-        extract_resource::ExtractResource,
+        extract_resource::{ExtractResource, ExtractResourcePlugin},
+        renderer::{RenderContext, RenderDevice, RenderQueue},
     },
 };
 
@@ -25,7 +26,7 @@ pub struct DiffusionImages {
 const DISPLAY_FACTOR: u32 = 4;
 const SIZE: UVec2 = UVec2::new(1280 / DISPLAY_FACTOR, 720 / DISPLAY_FACTOR);
 const WORKGROUP_SIZE: u32 = 8;
-
+const NUM_AGENTS: u32 = 50;
 
 fn main() {
     App::new()
@@ -42,14 +43,16 @@ fn main() {
                     ..default()
                 })
                 .set(ImagePlugin::default_nearest()),
+            ExtractResourcePlugin::<DiffusionImages>::default(),
             DiffusionComputePlugin,
+            AgentComputePlugin,
         ))
         .add_systems(Startup, setup)
-        .add_systems(Update, switch_textures)
+        .add_systems(Update, (switch_textures, update_agent_uniforms))
         .run();
 }
 
-fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, render_device: Res<RenderDevice>,) {
     let mut image = Image::new_target_texture(SIZE.x, SIZE.y, TextureFormat::Rgba32Float);
     image.asset_usage = RenderAssetUsages::RENDER_WORLD;
     image.texture_descriptor.usage =
@@ -73,11 +76,51 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     });
 
     commands.insert_resource(DiffusionUniforms {
-        decay: 0.99,
-        diffusion_strength: 0.25,
-        padding0: 0.0,
+        decay: 0.01,
+        diffusion_strength: 0.2,
+        delta_time: 0.0,
         padding1: 0.0,
     });
+
+    commands.insert_resource(AgentUniforms {
+        move_speed: 40.0,
+        turn_speed: 2.0,
+        sensor_angle_degrees: 30.0,
+        sensor_offset_dst: 15.0,
+        sensor_size: 3,
+        _pad0: 0,  // padding
+        screen_size: SIZE.as_vec2(),
+        color: LinearRgba::WHITE,
+        delta_time: 0.0,
+        frame: 0,
+        _pad1: Vec2::ZERO,
+    });
+    // ---- Init agents on GPU ----
+    let agent_count: u32 = NUM_AGENTS; // or whatever
+
+    let mut agents_cpu = Vec::with_capacity(agent_count as usize);
+    for i in 0..agent_count {
+        // Simple starting positions & directions for now
+        let x = (SIZE.x as f32) * 0.5;
+        let y = (SIZE.y as f32) * 0.5;
+        agents_cpu.push(agent::SlimeAgent {
+            position: Vec2::new(x, y),
+            direction: (i as f32) * 0.1,
+            _pad: 0.0,
+        });
+    }
+
+    let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("Slime Agents Buffer"),
+        contents: bytemuck::cast_slice(&agents_cpu),
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+    });
+
+    commands.insert_resource(agent::AgentGpuBuffer {
+        buffer,
+    });
+
+
 }
 
 // Switch texture to display every frame to show the one that was written to most recently.
@@ -87,4 +130,14 @@ fn switch_textures(images: Res<DiffusionImages>, mut sprite: Single<&mut Sprite>
     } else {
         sprite.image = images.texture_a.clone();
     }
+}
+
+fn update_agent_uniforms(
+    time: Res<Time>,
+    mut agent_uniforms: ResMut<AgentUniforms>,
+    mut diffusion_uniforms: ResMut<DiffusionUniforms>,
+) {
+    agent_uniforms.delta_time = time.delta_secs();
+    agent_uniforms.frame += 1;
+    diffusion_uniforms.delta_time = time.delta_secs();
 }

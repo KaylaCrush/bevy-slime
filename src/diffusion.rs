@@ -31,7 +31,6 @@ impl Plugin for DiffusionComputePlugin {
         // Extract the game of life image resource from the main world into the render world
         // for operation on by the compute shader and display on the sprite.
         app.add_plugins((
-            ExtractResourcePlugin::<DiffusionImages>::default(),
             ExtractResourcePlugin::<DiffusionUniforms>::default(),
         ));
         let render_app = app.sub_app_mut(RenderApp);
@@ -55,7 +54,7 @@ pub struct DiffusionLabel;
 pub struct DiffusionUniforms {
     pub decay: f32,
     pub diffusion_strength: f32,
-    pub padding0: f32,
+    pub delta_time: f32,
     pub padding1: f32,
 }
 
@@ -210,7 +209,15 @@ impl render_graph::Node for DiffusionNode {
                     .unwrap();
                 pass.set_bind_group(0, &bind_groups[index], &[]);
                 pass.set_pipeline(update_pipeline);
-                pass.dispatch_workgroups(SIZE.x / WORKGROUP_SIZE, SIZE.y / WORKGROUP_SIZE, 1);
+                fn ceil_div(x: u32, y: u32) -> u32 {
+                    (x + y - 1) / y
+                }
+
+                pass.dispatch_workgroups(
+                    ceil_div(SIZE.x, WORKGROUP_SIZE),
+                    ceil_div(SIZE.y, WORKGROUP_SIZE),
+                    1
+                );
             }
         }
 
