@@ -35,7 +35,7 @@ fn randomFloat(value: u32) -> f32 {
 }
 
 @compute @workgroup_size(8, 8, 1)
-fn init_agents(@builtin(global_invocation_id) id: vec3<u32>) {
+fn init(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = id.x;
     if (index >= config.agent_count) { return; }
 
@@ -48,35 +48,32 @@ fn init_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     agents[index].buffer = 0.0;
 }
 
-@compute @workgroup_size(8, 8, 1)
-fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (id.x >= arrayLength(&agents)) { return; }
+@compute @workgroup_size(64)
+fn update(@builtin(global_invocation_id) id: vec3<u32>) {
+    let index = id.x;
+    if (index >= config.agent_count) { return; }
 
-    var agent = agents[id.x];
+    var agent = agents[index];
 
-    // --- Movement ---
-    let move_speed: f32 = 50.0;       // units per second
-    let delta_time: f32 = 0.016;      // assuming 60fps
+    let move_speed: f32 = 50.0;
+    let delta_time: f32 = 0.016;
     let trail_weight: f32 = 0.05;
 
-    let screen_width: f32 = 800.0;    // hardcoded screen width
-    let screen_height: f32 = 600.0;   // hardcoded screen height
+    let screen_width = config.screen_size.x;
+    let screen_height = config.screen_size.y;
 
     let dir = vec2<f32>(cos(agent.direction), sin(agent.direction));
     agent.position += dir * move_speed * delta_time;
 
-    // Clamp to bounds
     agent.position = clamp(
         agent.position,
         vec2<f32>(0.0, 0.0),
         vec2<f32>(screen_width - 1.0, screen_height - 1.0)
     );
 
-    // --- Trail writing to current output texture ---
     let coord = vec2<i32>(i32(agent.position.x), i32(agent.position.y));
-    let oldTrail = textureLoad(output, coord);   // ✅ exactly 2 args
+    let oldTrail = textureLoad(input, coord);
     textureStore(output, coord, oldTrail + vec4<f32>(trail_weight));
 
-    // --- Save updated agent back ---
-    agents[id.x] = agent;
+    agents[index] = agent;
 }
