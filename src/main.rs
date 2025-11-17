@@ -8,6 +8,8 @@ use bevy::{
     },
 };
 
+use rand::Rng;
+
 mod diffusion;
 use diffusion::DiffusionComputePlugin;
 use diffusion::DiffusionUniforms;
@@ -23,10 +25,10 @@ pub struct DiffusionImages {
     pub texture_b: Handle<Image>,
 }
 
-const DISPLAY_FACTOR: u32 = 4;
+const DISPLAY_FACTOR: u32 = 1;
 const SIZE: UVec2 = UVec2::new(1280 / DISPLAY_FACTOR, 720 / DISPLAY_FACTOR);
 const WORKGROUP_SIZE: u32 = 8;
-const NUM_AGENTS: u32 = 50;
+const NUM_AGENTS: u32 = 500000;
 
 fn main() {
     App::new()
@@ -76,36 +78,50 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, render_devic
     });
 
     commands.insert_resource(DiffusionUniforms {
-        decay: 0.01,
-        diffusion_strength: 0.2,
-        delta_time: 0.0,
+        decay: 0.8,
+        diffusion_strength: 0.1,
+        delta_time: 0.001,
         padding1: 0.0,
     });
 
     commands.insert_resource(AgentUniforms {
         move_speed: 40.0,
-        turn_speed: 2.0,
+        turn_speed: 6.0,
         sensor_angle_degrees: 30.0,
         sensor_offset_dst: 15.0,
         sensor_size: 3,
         _pad0: 0,  // padding
         screen_size: SIZE.as_vec2(),
         color: LinearRgba::WHITE,
-        delta_time: 0.0,
+        delta_time: 0.001,
         frame: 0,
         _pad1: Vec2::ZERO,
     });
     // ---- Init agents on GPU ----
     let agent_count: u32 = NUM_AGENTS; // or whatever
 
+    let mut rng = rand::thread_rng();
+    let center = Vec2::new(SIZE.x as f32 * 0.5, SIZE.y as f32 * 0.5);
+
+    let radius = (SIZE.x.min(SIZE.y) as f32) * 0.4; // spawn inside 40% of screen, tweak as desired
+
     let mut agents_cpu = Vec::with_capacity(agent_count as usize);
-    for i in 0..agent_count {
-        // Simple starting positions & directions for now
-        let x = (SIZE.x as f32) * 0.5;
-        let y = (SIZE.y as f32) * 0.5;
+
+    for _ in 0..agent_count {
+        // --- Random position inside circle ---
+        let angle = rng.random_range(0.0..std::f32::consts::TAU);
+        let r = radius * rng.random::<f32>().sqrt();
+        let offset = Vec2::new(angle.cos() * r, angle.sin() * r);
+
+        let position = center + offset;
+
+        // --- Direction facing the center ---
+        let dir_vec = (center - position).normalize_or_zero();
+        let direction = dir_vec.y.atan2(dir_vec.x);
+
         agents_cpu.push(agent::SlimeAgent {
-            position: Vec2::new(x, y),
-            direction: (i as f32) * 0.1,
+            position,
+            direction,
             _pad: 0.0,
         });
     }
