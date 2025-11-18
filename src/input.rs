@@ -1,4 +1,4 @@
-use bevy::{input::keyboard::{self, keyboard_input_system}, prelude::*};
+use bevy::{input::keyboard, prelude::*};
 
 pub struct InputPlugin;
 impl Plugin for InputPlugin {

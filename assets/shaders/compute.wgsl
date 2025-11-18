@@ -22,12 +22,20 @@ struct SpeciesSettings {
     turn_speed: f32,
     sensor_angle_degrees: f32,
     sensor_offset_dst: f32,
+
     sensor_size: f32,
     deposit_amount: f32,
     diffusion_strength: f32,
     decay_rate: f32,
+
+    follow_strength: f32,
+    avoid_strength: f32,
+    _pad0: f32,
+    _pad1: f32,
+
     color: vec4<f32>,
-    pheromone_mask: vec4<f32>,
+    follow_mask: vec4<f32>,
+    avoid_mask: vec4<f32>,
 };
 
 struct GlobalUniforms {
@@ -94,7 +102,7 @@ fn copy_to_temp(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(8, 8, 1)
 fn handle_input(@builtin(global_invocation_id) id: vec3<u32>) {
     // no button, nothing to do
-    if (globals.left_button_pressed == 0u) {
+    if (globals.left_button_pressed == 0u && globals.right_button_pressed == 0u) {
         return;
     }
 
@@ -113,18 +121,22 @@ fn handle_input(@builtin(global_invocation_id) id: vec3<u32>) {
     let coord = vec2<i32>(i32(x), i32(y));
     let pixel_pos = vec2<f32>(f32(x), f32(y));
 
-    let erase_radius = 40.0;
+    let brush_radius = 80.0;
     let d = distance(pixel_pos, globals.mouse_position);
-    if (d >= erase_radius) {
+    if (d >= brush_radius) {
         return;
     }
 
-    let t = 1.0 - (d / erase_radius);    // 1 at center, 0 at edge
-    let erase_strength = pow(t, 2.0);    // smoother falloff
+    let t = 1.0 - (d / brush_radius);    // 1 at center, 0 at edge
+    let brush_strength = pow(t, 2.0);    // smoother falloff
 
     let current = textureLoad(temp_tex, coord);
-    let erased = mix(current, vec4<f32>(0.0, 0.0, 0.0, 0.0), erase_strength);
-    textureStore(temp_tex, coord, erased);
+    let brush_color: vec4<f32> =
+        select(vec4<f32>(1.0, 1.0, 1.0, 1.0), vec4<f32>(0.0, 0.0, 0.0, 0.0),
+               globals.left_button_pressed != 0u);
+
+    let altered = mix(current, brush_color, brush_strength);
+    textureStore(temp_tex, coord, altered);
 }
 
 // ------------------------------------------------------------
@@ -208,21 +220,6 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
         dir = dir + random_val * s.turn_speed * dt;
     }
 
-    // ---- Mouse Avoidance Steering (only when LMB down) ----
-    if (globals.left_button_pressed != 0u) {
-        let fear_vec = fear_mouse(agent.position, globals);
-
-        if (fear_vec.x != 0.0 || fear_vec.y != 0.0) {
-            let desired_angle = atan2(fear_vec.y, fear_vec.x);
-
-            let pi = 3.14159265;
-            var diff = desired_angle - dir;
-            diff = diff - 2.0 * pi * floor((diff + pi) / (2.0 * pi));
-
-            dir = dir + diff * s.turn_speed * dt;
-        }
-    }
-
     agent.angle = dir;
 
     // ------- Move -------
@@ -230,14 +227,15 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     agent.position = agent.position + fwd * s.move_speed * dt;
 
     // ------- Bounce off bounds -------
-    agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
+    //agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
+    agent.position = wrap_if_needed(agent.position, globals.screen_size);
 
     // ------- Deposit (species-specific via mask) -------
     let coord = vec2<i32>(i32(agent.position.x), i32(agent.position.y));
 
     // read current pheromone (already diffused + decayed)
     let old = textureLoad(temp_tex, coord);
-    let mask = s.pheromone_mask; // e.g. (1,0,0,0) or (0,1,0,0), etc.
+    let mask = s.follow_mask; // e.g. (1,0,0,0) or (0,1,0,0), etc.
     let added = mask * s.deposit_amount;
 
     textureStore(output_tex, coord, old + added);
@@ -249,59 +247,30 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
 // ------------------------------------------------------------
 // HELPERS
 // ------------------------------------------------------------
-fn fear_mouse(position: vec2<f32>, globals: GlobalUniforms) -> vec2<f32> {
-    // no mouse / sentinel
-    if (globals.mouse_position.x < -9000.0) {
-        return vec2<f32>(0.0, 0.0);
-    }
-
-    let mouse_pos = globals.mouse_position;
-    let to_agent = position - mouse_pos;     // direction away from mouse
-    let dist = length(to_agent);
-
-    let fear_radius = 40.0;
-
-    if (dist >= fear_radius || dist == 0.0) {
-        return vec2<f32>(0.0, 0.0);
-    }
-
-    let strength = (fear_radius - dist) / fear_radius;  // 1 → 0 falloff
-    return normalize(to_agent) * strength;
+fn sample_signal(pos: vec2<i32>, mask: vec4<f32>) -> f32 {
+    let c = textureLoad(temp_tex, pos);
+    return dot(c, mask);
 }
 
-fn sense(
-    position: vec2<f32>,
-    angle: f32,
-    s: SpeciesSettings,
-    globals: GlobalUniforms
-) -> f32 {
+fn sense(position: vec2<f32>, angle: f32, s: SpeciesSettings, globals: GlobalUniforms) -> f32 {
     let dir = vec2<f32>(cos(angle), sin(angle));
     let sensor_pos = position + dir * s.sensor_offset_dst;
 
     let cx = i32(sensor_pos.x);
     let cy = i32(sensor_pos.y);
+    let r = i32(s.sensor_size);
 
-    let sensor_i = i32(s.sensor_size);
-    let mask = s.pheromone_mask;
+    var sum = 0.0;
 
-    var sum: f32 = 0.0;
-
-    for (var ox = -sensor_i; ox <= sensor_i; ox = ox + 1) {
-        for (var oy = -sensor_i; oy <= sensor_i; oy = oy + 1) {
-
+    for (var ox = -r; ox <= r; ox++) {
+        for (var oy = -r; oy <= r; oy++) {
             let sx = clamp(cx + ox, 0, i32(globals.screen_size.x) - 1);
             let sy = clamp(cy + oy, 0, i32(globals.screen_size.y) - 1);
 
-            let col = textureLoad(temp_tex, vec2<i32>(sx, sy));
+            let own = sample_signal(vec2<i32>(sx, sy), s.follow_mask);
+            let avoid = sample_signal(vec2<i32>(sx, sy), s.avoid_mask);
 
-            // dot(pheromone, mask) → "how much of MY pheromone is here?"
-            let filtered =
-                col.x * mask.x +
-                col.y * mask.y +
-                col.z * mask.z +
-                col.w * mask.w;
-
-            sum = sum + filtered;
+            sum += own - avoid*100.0; // avoid signal is weighted more heavily
         }
     }
 
@@ -317,6 +286,23 @@ fn bounce_if_needed(position: vec2<f32>, direction: f32, size: vec2<f32>) -> f32
         dir = -dir;
     }
     return dir;
+}
+
+fn wrap_if_needed(position: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
+    var pos = position;
+    if (pos.x < 0.0) {
+        pos.x = pos.x + size.x;
+    }
+    if (pos.x >= size.x) {
+        pos.x = pos.x - size.x;
+    }
+    if (pos.y < 0.0) {
+        pos.y = pos.y + size.y;
+    }
+    if (pos.y >= size.y) {
+        pos.y = pos.y - size.y;
+    }
+    return pos;
 }
 
 fn per_frame_factor(rate: f32, dt: f32) -> f32 {
