@@ -31,7 +31,7 @@ const SIZE: UVec2 = UVec2::new(1920 / DISPLAY_FACTOR, 1080 / DISPLAY_FACTOR);
 const WORKGROUP_SIZE: u32 = 8;
 const AGENT_WORKGROUP_SIZE: u32 = 64;
 const NUM_AGENTS: u32 = 1000000;
-const NUM_SPECIES: u32 = 1;
+const NUM_SPECIES: u32 = 3;
 
 
 #[repr(C)]
@@ -69,7 +69,7 @@ impl Default for SpeciesSettings {
     fn default() -> Self {
         Self {
             move_speed: 30.0,
-            turn_speed: 3.0,
+            turn_speed: 6.0,
             sensor_angle_degrees: 30.0,
             sensor_offset_dst: 35.0,
 
@@ -89,6 +89,34 @@ impl Default for SpeciesSettings {
         }
     }
 }
+impl SpeciesSettings {
+    fn red() -> Self {
+        Self {
+            color: Vec4::new(1.0, 0.0, 0.0, 1.0),
+            follow_mask: Vec4::new(1.0, 0.0, 0.0, 1.0),
+            avoid_mask: Vec4::new(0.0, 1.0, 1.0, 0.0),
+            ..Default::default()
+        }
+    }
+    fn green() -> Self {
+        Self {
+            color: Vec4::new(0.0, 1.0, 0.0, 1.0),
+            follow_mask: Vec4::new(0.0, 1.0, 0.0, 1.0),
+            avoid_mask: Vec4::new(1.0, 0.0, 1.0, 0.0),
+            ..Default::default()
+        }
+    }
+    fn blue() -> Self {
+        Self {
+            color: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            follow_mask: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            avoid_mask: Vec4::new(1.0, 1.0, 0.0, 0.0),
+            ..Default::default()
+        }
+    }
+}
+
+
 #[derive(Resource, Clone, ExtractResource, ShaderType)]
 struct GlobalUniforms {
     pub delta_time: f32,
@@ -186,23 +214,23 @@ fn setup(
     let mut agents = Vec::with_capacity(NUM_AGENTS as usize);
     let mut rand = rand::rng();
 
-    // let center = Vec2::new(SIZE.x as f32 * 0.5, SIZE.y as f32 * 0.5);
-    // let radius = (SIZE.x.min(SIZE.y) as f32) * 0.4;
+    let center = Vec2::new(SIZE.x as f32 * 0.5, SIZE.y as f32 * 0.5);
+    let radius = (SIZE.x.min(SIZE.y) as f32) * 0.4;
     for i in 0..NUM_AGENTS {
         let angle = rand.random::<f32>() * std::f32::consts::TAU;
-        // let r = radius * rand.random::<f32>().sqrt(); // uniform distribution in circle
+        let r = radius * rand.random::<f32>().sqrt(); // uniform distribution in circle
         let index = (i % NUM_SPECIES) as u32;
-        let dir = angle;
-        let pos: Vec2 = Vec2::new(
-            rand.random::<f32>() * SIZE.x as f32,
-            rand.random::<f32>() * SIZE.y as f32,
-        );
+        // let dir = angle;
+        // let pos: Vec2 = Vec2::new(
+            // rand.random::<f32>() * SIZE.x as f32,
+            // rand.random::<f32>() * SIZE.y as f32,
+        // );
 
-        // let pos = center + Vec2::new(angle.cos() * r, angle.sin() * r);
+        let pos = center + Vec2::new(angle.cos() * r, angle.sin() * r);
 
         // face toward center
-        // let dir_vec = (center - pos).normalize_or_zero();
-        // let dir = dir_vec.y.atan2(dir_vec.x);
+        let dir_vec = (center - pos).normalize_or_zero();
+        let dir = dir_vec.y.atan2(dir_vec.x);
 
         agents.push(SlimeAgentData {
             position: pos,
@@ -224,52 +252,9 @@ fn setup(
 
     // ---- SPECIES BUFFER (2 species) ----
     let species_list = vec![
-        // Species 0: Blue, slow diffuser
-        SpeciesSettings::default(),
-        // Species 1: Red, faster & turns more
-        SpeciesSettings {
-            move_speed: 90.0,
-            turn_speed: 9.0,
-            sensor_angle_degrees: 35.0,
-            sensor_offset_dst: 12.0,
-
-            sensor_size: 3.0,
-            deposit_amount: 1.0,
-            diffusion_strength: 1.0,
-            decay_rate: 0.8,
-
-            follow_strength: 0.3,
-            avoid_strength: 0.1,
-            _pad0: 0.0,
-            _pad1: 0.0,
-
-            color: Vec4::new(1.0, 0.0, 0.0, 1.0),  // red
-            follow_mask: Vec4::new(1.0, 0.2, 0.2, 1.0), // use RED channel
-            avoid_mask: Vec4::new(0.0, 0.1, 0.1, 0.0), // avoid BLUE channel
-
-
-        },
-        // Species 2: Green — slow, very sensitive, large sensors
-        SpeciesSettings {
-            move_speed: 20.0,
-            turn_speed: 2.0,
-            sensor_angle_degrees: 25.0,
-            sensor_offset_dst: 30.0,
-
-            sensor_size: 7.0,
-            deposit_amount: 1.0,
-            diffusion_strength: 0.9,
-            decay_rate: 0.7,
-
-            follow_strength: 0.6,
-            avoid_strength: 0.01,
-            _pad0: 0.0,
-            _pad1: 0.0,
-
-            color: Vec4::new(0.0, 1.0, 0.0, 1.0),
-            follow_mask: Vec4::new(0.0, 0.2, 0.0, 1.0),     // green channel
-            avoid_mask: Vec4::new(1.0, 0.0, 0.2, 0.0),         // avoids red + blue trails
-        },
+        SpeciesSettings::red(),
+        SpeciesSettings::green(),
+        SpeciesSettings::blue(),
     ];
     let species_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("Slime species buffer"),

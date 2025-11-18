@@ -227,8 +227,8 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     agent.position = agent.position + fwd * s.move_speed * dt;
 
     // ------- Bounce off bounds -------
-    //agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
-    agent.position = wrap_if_needed(agent.position, globals.screen_size);
+    agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
+    // agent.position = wrap_if_needed(agent.position, globals.screen_size);
 
     // ------- Deposit (species-specific via mask) -------
     let coord = vec2<i32>(i32(agent.position.x), i32(agent.position.y));
