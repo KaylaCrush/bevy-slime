@@ -15,7 +15,7 @@ use bytemuck::{Pod, Zeroable};
 use rand::Rng;
 
 pub const AGENT_WORKGROUP_SIZE: u32 = 64;
-pub const NUM_AGENTS: u32 = 100000;
+pub const NUM_AGENTS: u32 = 1000000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, ShaderType)]

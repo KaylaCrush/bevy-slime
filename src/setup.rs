@@ -88,14 +88,14 @@ pub fn setup(
             decay: 0.6,
             _pad0: 0.0,
             _pad1: 0.0,
-            color: Vec4::new(0.0, 1.0, 0.0, 1.0),
+            color: Vec4::new(0.7, 0.9, 0.1, 1.0),
         },
         PheromoneLayerParam {
             diffusion: 0.7,
             decay: 0.9,
             _pad0: 0.0,
             _pad1: 0.0,
-            color: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            color: Vec4::new(0.1, 0.2, 0.8, 1.0),
         },
     ];
     let layer_param_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
