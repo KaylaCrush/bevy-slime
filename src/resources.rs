@@ -44,13 +44,28 @@ impl Default for SpeciesSettings {
 }
 impl SpeciesSettings {
     pub fn red() -> Self {
-        Self { color: Vec4::new(1.0, 0.0, 0.0, 1.0), weights: Vec4::new(1.0, -1.0, -1.0, 0.0), emit: Vec4::new(1.0, 0.0, 0.0, 0.0), ..Default::default() }
+        Self {
+            color: Vec4::new(1.0, 0.0, 0.0, 1.0),
+            weights: Vec4::new(1.0, -1.0, -1.0, 0.0),
+            emit: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            ..Default::default()
+        }
     }
     pub fn green() -> Self {
-        Self { color: Vec4::new(0.0, 1.0, 0.0, 1.0), weights: Vec4::new(-1.0, 1.0, -1.0, 0.0), emit: Vec4::new(0.0, 1.0, 0.0, 0.0), ..Default::default() }
+        Self {
+            color: Vec4::new(0.0, 1.0, 0.0, 1.0),
+            weights: Vec4::new(-1.0, 1.0, -1.0, 0.0),
+            emit: Vec4::new(0.0, 1.0, 0.0, 0.0),
+            ..Default::default()
+        }
     }
     pub fn blue() -> Self {
-        Self { color: Vec4::new(0.0, 0.0, 1.0, 1.0), weights: Vec4::new(-1.0, -1.0, 1.0, 0.0), emit: Vec4::new(0.0, 0.0, 1.0, 0.0), ..Default::default() }
+        Self {
+            color: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            weights: Vec4::new(-1.0, -1.0, 1.0, 0.0),
+            emit: Vec4::new(0.0, 0.0, 1.0, 0.0),
+            ..Default::default()
+        }
     }
 }
 
@@ -63,7 +78,12 @@ pub const SIZE: UVec2 = UVec2::new(1920 / DISPLAY_FACTOR, 1080 / DISPLAY_FACTOR)
 pub const WORKGROUP_SIZE: u32 = 8;
 pub const NUM_PHEROMONES: usize = 3;
 
-#[derive(Resource, Clone, bevy::render::extract_resource::ExtractResource, bevy::render::render_resource::ShaderType)]
+#[derive(
+    Resource,
+    Clone,
+    bevy::render::extract_resource::ExtractResource,
+    bevy::render::render_resource::ShaderType,
+)]
 pub struct GlobalUniforms {
     pub delta_time: f32,
     pub frame: u32,
@@ -74,7 +94,12 @@ pub struct GlobalUniforms {
     pub right_button_pressed: u32,
 }
 
-#[derive(Resource, Clone, bevy::render::extract_resource::ExtractResource, bevy::render::render_resource::ShaderType)]
+#[derive(
+    Resource,
+    Clone,
+    bevy::render::extract_resource::ExtractResource,
+    bevy::render::render_resource::ShaderType,
+)]
 pub struct PheromoneUniforms {
     pub diffusion: Vec4,
     pub decay: Vec4,
@@ -98,7 +123,7 @@ pub struct PheromoneLayerParamsBuffer {
 }
 
 #[derive(Resource, Clone, ExtractResource)]
-pub struct SlimeSimImages {
+pub struct PheromoneImages {
     pub texture_a: Handle<Image>,
     pub texture_b: Handle<Image>,
     pub temp_texture: Handle<Image>,
@@ -110,7 +135,7 @@ pub struct SpeciesGpuBuffer {
 }
 
 #[derive(Resource)]
-pub struct SlimeSimImageBindGroups(pub [bevy::render::render_resource::BindGroup; 2]);
+pub struct AgentSimImageBindGroups(pub [bevy::render::render_resource::BindGroup; 2]);
 
 // Removed legacy per-channel bind groups (extract/composite/env)
 
@@ -122,7 +147,7 @@ pub struct PheroArrayEnvBindGroups(pub [bevy::render::render_resource::BindGroup
 pub struct PheroArrayCompositeBindGroups(pub [bevy::render::render_resource::BindGroup; 2]);
 
 #[derive(Resource, Clone, ExtractResource)]
-pub struct SlimeSimRunConfig {
+pub struct AgentSimRunConfig {
     // Flags to control which simulation stages run. Useful for debugging or
     // for stepping parts of the pipeline individually:
     // - `run_copy_and_input`: enable the copy/input (brush) pass for pheromones
@@ -131,4 +156,27 @@ pub struct SlimeSimRunConfig {
     pub run_copy_and_input: bool,
     pub run_diffuse: bool,
     pub run_agents: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constants_and_defaults() {
+        // Verify NUM_PHEROMONES matches expected RGB channels
+        assert_eq!(NUM_PHEROMONES, 3);
+
+        // Verify default species settings match expectations
+        let s = SpeciesSettings::default();
+        assert_eq!(s.move_speed, 30.0);
+        assert_eq!(s.turn_speed, 6.0);
+        assert_eq!(s.sensor_angle_degrees, 30.0);
+        assert_eq!(s.sensor_offset_dst, 35.0);
+        assert_eq!(s.sensor_size, 1.0);
+        assert_eq!(s.color.w, 1.0);
+        // weights and emit default to zero vectors
+        assert_eq!(s.weights, Vec4::ZERO);
+        assert_eq!(s.emit, Vec4::ZERO);
+    }
 }

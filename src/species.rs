@@ -6,21 +6,21 @@
 // packed `SpeciesSettings` buffer uploaded to the GPU for use by the agent
 // compute shader.
 
-use bevy::prelude::*;
-use bevy::math::Vec4;
-use bevy::render::renderer::RenderDevice;
-use bevy::render::render_resource::{BufferInitDescriptor, BufferUsages};
 use crate::resources::SpeciesSettings;
+use bevy::math::Vec4;
+use bevy::prelude::*;
+use bevy::render::render_resource::{BufferInitDescriptor, BufferUsages};
+use bevy::render::renderer::RenderDevice;
 
 // Authoring helpers used by the app to assemble `SpeciesSettings` that are
 // uploaded to the GPU. These helpers are intentionally small and tested below.
 
-// Authoring-side behavior components for Slime-like agents/species.
+// Authoring-side behavior components for Agent-like agents/species.
 // These are used to build GPU SpeciesSettings; we don't spawn per-agent ECS entities
 // for performance. Instead we author a small set of species/archetypes.
 
 #[derive(Component)]
-pub struct SlimeSpecies; // marker entity representing a species/archetype
+pub struct AgentSpecies; // marker entity representing a species/archetype
 
 #[derive(Component, Deref, DerefMut)]
 pub struct MoveSpeed(pub f32);
@@ -119,48 +119,85 @@ fn channel_to_mask(channel: u32) -> Vec4 {
     }
 }
 
-
-
-// Spawn three default slime species to match the current shader/channel assumptions (RGB)
+// Spawn three default agent species to match the current shader/channel assumptions (RGB)
 pub fn spawn_default_species(mut commands: Commands) {
     // Red species (channel 0)
     commands.spawn((
-        SlimeSpecies,
+        AgentSpecies,
         AgentColor(Vec4::new(1.0, 0.0, 0.0, 1.0)),
         MoveSpeed(30.0),
         TurnSpeed(6.0),
-        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
-        FollowsPheromone { channel: 0, strength: 1.0 },
-        AvoidsPheromone { channel: 1, strength: 1.0 },
-        EmitsPheromone { channel: 0, amount: 1.0 },
+        Sensor {
+            angle_degrees: 30.0,
+            offset_dst: 35.0,
+            size: 1.0,
+        },
+        FollowsPheromone {
+            channel: 0,
+            strength: 1.0,
+        },
+        AvoidsPheromone {
+            channel: 1,
+            strength: 1.0,
+        },
+        EmitsPheromone {
+            channel: 0,
+            amount: 1.0,
+        },
     ));
 
     // Green species (channel 1)
     commands.spawn((
-        SlimeSpecies,
+        AgentSpecies,
         AgentColor(Vec4::new(0.0, 1.0, 0.0, 1.0)),
         MoveSpeed(30.0),
         TurnSpeed(6.0),
-        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
-        FollowsPheromone { channel: 1, strength: 1.0 },
-        AvoidsPheromone { channel: 2, strength: 1.0 },
-        EmitsPheromone { channel: 1, amount: 1.0 },
+        Sensor {
+            angle_degrees: 30.0,
+            offset_dst: 35.0,
+            size: 1.0,
+        },
+        FollowsPheromone {
+            channel: 1,
+            strength: 1.0,
+        },
+        AvoidsPheromone {
+            channel: 2,
+            strength: 1.0,
+        },
+        EmitsPheromone {
+            channel: 1,
+            amount: 1.0,
+        },
     ));
 
     // Blue species (channel 2)
     commands.spawn((
-        SlimeSpecies,
+        AgentSpecies,
         AgentColor(Vec4::new(0.0, 0.0, 1.0, 1.0)),
         MoveSpeed(30.0),
         TurnSpeed(6.0),
-        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
-        FollowsPheromone { channel: 2, strength: 1.0 },
-        AvoidsPheromone { channel: 0, strength: 1.0 },
-        EmitsPheromone { channel: 2, amount: 1.0 },
+        Sensor {
+            angle_degrees: 30.0,
+            offset_dst: 35.0,
+            size: 1.0,
+        },
+        FollowsPheromone {
+            channel: 2,
+            strength: 1.0,
+        },
+        AvoidsPheromone {
+            channel: 0,
+            strength: 1.0,
+        },
+        EmitsPheromone {
+            channel: 2,
+            amount: 1.0,
+        },
     ));
 }
 
-/// Build a GPU buffer from authored SlimeSpecies entities and upload as SpeciesGpuBuffer resource.
+/// Build a GPU buffer from authored AgentSpecies entities and upload as SpeciesGpuBuffer resource.
 /// If no species are authored, falls back to the default RGB trio.
 #[allow(clippy::type_complexity)]
 pub fn upload_species_to_gpu(
@@ -176,16 +213,12 @@ pub fn upload_species_to_gpu(
             Option<&AvoidsPheromone>,
             Option<&EmitsPheromone>,
         ),
-        With<SlimeSpecies>,
+        With<AgentSpecies>,
     >,
-)
-{
-    let mut species: Vec<SpeciesSettings> = query
-        .iter()
-        .map(|(color, move_speed, turn_speed, sensor, follow, avoid, emit)| {
-            build_species_settings_from_components(color, move_speed, turn_speed, sensor, follow, avoid, emit)
-        })
-        .collect();
+) {
+    // Collect species settings from the query using a helper so the collection
+    // logic can be tested independently of GPU buffer creation.
+    let mut species: Vec<SpeciesSettings> = collect_species_settings_from_refs(query.iter());
 
     if species.is_empty() {
         species = vec![
@@ -203,6 +236,33 @@ pub fn upload_species_to_gpu(
     commands.insert_resource(crate::resources::SpeciesGpuBuffer { buffer });
 }
 
+/// Collect a `Vec<SpeciesSettings>` from an iterator of component references.
+/// This is a small pure helper so we can unit-test the translation from
+/// authoring components to the GPU-friendly `SpeciesSettings` layout.
+pub fn collect_species_settings_from_refs<'a, I>(iter: I) -> Vec<SpeciesSettings>
+where
+    I: IntoIterator<
+        Item = (
+            &'a AgentColor,
+            &'a MoveSpeed,
+            &'a TurnSpeed,
+            &'a Sensor,
+            Option<&'a FollowsPheromone>,
+            Option<&'a AvoidsPheromone>,
+            Option<&'a EmitsPheromone>,
+        ),
+    >,
+{
+    iter.into_iter()
+        .map(
+            |(color, move_speed, turn_speed, sensor, follow, avoid, emit)| {
+                build_species_settings_from_components(
+                    color, move_speed, turn_speed, sensor, follow, avoid, emit,
+                )
+            },
+        )
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -222,10 +282,23 @@ mod tests {
         let color = AgentColor(Vec4::new(0.2, 0.3, 0.4, 1.0));
         let move_speed = MoveSpeed(12.0);
         let turn_speed = TurnSpeed(3.0);
-        let sensor = Sensor { angle_degrees: 10.0, offset_dst: 5.0, size: 2.0 };
-        let follow = FollowsPheromone { channel: 0, strength: 0.5 };
-        let avoid = AvoidsPheromone { channel: 1, strength: 0.25 };
-        let emit = EmitsPheromone { channel: 2, amount: 0.75 };
+        let sensor = Sensor {
+            angle_degrees: 10.0,
+            offset_dst: 5.0,
+            size: 2.0,
+        };
+        let follow = FollowsPheromone {
+            channel: 0,
+            strength: 0.5,
+        };
+        let avoid = AvoidsPheromone {
+            channel: 1,
+            strength: 0.25,
+        };
+        let emit = EmitsPheromone {
+            channel: 2,
+            amount: 0.75,
+        };
 
         let settings = build_species_settings_from_components(
             &color,
@@ -245,5 +318,73 @@ mod tests {
         // emit: channel 2 set, alpha must be zero
         assert!(settings.emit.z > 0.0);
         assert_eq!(settings.emit.w, 0.0);
+    }
+
+    #[test]
+    fn build_species_no_follow_avoid_emit() {
+        let color = AgentColor(Vec4::new(0.1, 0.2, 0.3, 1.0));
+        let move_speed = MoveSpeed(10.0);
+        let turn_speed = TurnSpeed(2.0);
+        let sensor = Sensor {
+            angle_degrees: 15.0,
+            offset_dst: 5.0,
+            size: 1.0,
+        };
+
+        let settings = build_species_settings_from_components(
+            &color,
+            &move_speed,
+            &turn_speed,
+            &sensor,
+            None,
+            None,
+            None,
+        );
+
+        // weights should be zero and emit alpha should be zero
+        assert_eq!(settings.weights, Vec4::ZERO);
+        assert_eq!(settings.emit.w, 0.0);
+        assert_eq!(settings.emit, Vec4::ZERO);
+    }
+
+    #[test]
+    fn collect_species_settings_from_refs_basic() {
+        let color = AgentColor(Vec4::new(0.2, 0.3, 0.4, 1.0));
+        let move_speed = MoveSpeed(12.0);
+        let turn_speed = TurnSpeed(3.0);
+        let sensor = Sensor {
+            angle_degrees: 10.0,
+            offset_dst: 5.0,
+            size: 2.0,
+        };
+        let follow = FollowsPheromone {
+            channel: 0,
+            strength: 0.5,
+        };
+        let avoid = AvoidsPheromone {
+            channel: 1,
+            strength: 0.25,
+        };
+        let emit = EmitsPheromone {
+            channel: 2,
+            amount: 0.75,
+        };
+
+        let items = vec![(
+            &color,
+            &move_speed,
+            &turn_speed,
+            &sensor,
+            Some(&follow),
+            Some(&avoid),
+            Some(&emit),
+        )];
+
+        let list = collect_species_settings_from_refs(items);
+        assert_eq!(list.len(), 1);
+        let s = &list[0];
+        assert_eq!(s.color, Vec4::new(0.2, 0.3, 0.4, 1.0));
+        assert!(s.weights.x > 0.0 && s.weights.y < 0.0);
+        assert!(s.emit.z > 0.0 && s.emit.w == 0.0);
     }
 }

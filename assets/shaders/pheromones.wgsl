@@ -9,9 +9,12 @@ struct GlobalUniforms {
     right_button_pressed: u32,
 };
 
-struct PheromoneParams {
-    diffusion: vec4<f32>,
-    decay: vec4<f32>,
+struct PheromoneLayerParam {
+    diffusion: f32,
+    decay: f32,
+    _pad0: f32,
+    _pad1: f32,
+    color: vec4<f32>,
 };
 
 fn per_frame_factor(rate: f32, dt: f32) -> f32 {
@@ -28,7 +31,7 @@ fn per_frame_factor(rate: f32, dt: f32) -> f32 {
 @group(0) @binding(2) var rgba_temp_array: texture_storage_2d<rgba32float, read_write>;
 @group(0) @binding(3) var<uniform> globals_array: GlobalUniforms;
 @group(0) @binding(4) var<storage, read> species_array: array<vec4<f32>>; // unused here; keep layout compatible
-@group(0) @binding(5) var<uniform> pheromones_array: PheromoneParams;
+@group(0) @binding(5) var<storage, read> layer_params_array: array<PheromoneLayerParam>;
 
 @compute @workgroup_size(8, 8, 1)
 fn diffuse_phero_array(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -47,9 +50,9 @@ fn diffuse_phero_array(@builtin(global_invocation_id) id: vec3<u32>) {
     let uval = textureLoad(prev_array, up, l).x;
     let dval = textureLoad(prev_array, down, l).x;
     let blurred = (c * 4.0 + lval + rval + uval + dval) / 8.0;
-    // Use x component of params for now; can extend to vector per-layer later
-    let diff_factor = per_frame_factor(pheromones_array.diffusion.x, dt);
-    let dec_factor  = per_frame_factor(pheromones_array.decay.x, dt);
+    let layer = layer_params_array[id.z];
+    let diff_factor = per_frame_factor(layer.diffusion, dt);
+    let dec_factor  = per_frame_factor(layer.decay, dt);
     let mixed = mix(c, blurred, diff_factor);
     let result = mixed * (1.0 - dec_factor);
     textureStore(next_array, coord, l, vec4<f32>(result, 0.0, 0.0, 0.0));
@@ -70,15 +73,23 @@ fn handle_input_phero_array(@builtin(global_invocation_id) id: vec3<u32>) {
     if (d >= brush_radius) { return; }
     let t = 1.0 - (d / brush_radius);
     let brush_strength = pow(t, 2.0);
+    // Paint only a single layer: left-click -> layer 0, right-click -> layer 1
+    let target_layer_left: i32 = 0;
+    let target_layer_right: i32 = 1;
+    let is_left = globals_array.left_button_pressed != 0u;
+    let is_right = globals_array.right_button_pressed != 0u;
+    let should_paint = (is_left && l == target_layer_left) || (is_right && l == target_layer_right);
+    if (!should_paint) { return; }
     let current = textureLoad(next_array, coord, l).x;
-    let brush_val: f32 = select(1.0, 0.0, globals_array.left_button_pressed != 0u);
+    let brush_val: f32 = select(0.0, 1.0, is_left); // left deposits, right erases to 0.0
     let altered = mix(current, brush_val, brush_strength);
     textureStore(next_array, coord, l, vec4<f32>(altered, 0.0, 0.0, 0.0));
 }
 
-// Composite array -> RGBA display (layers 0..2 to r,g,b)
+// Composite array -> RGBA display using per-layer colors
 @group(0) @binding(0) var p_in_array: texture_storage_2d_array<r32float, read>;
 @group(0) @binding(1) var rgba_out_array: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(2) var<storage, read> layer_params_comp: array<PheromoneLayerParam>;
 
 @compute @workgroup_size(8, 8, 1)
 fn composite_pheromones_array(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -86,49 +97,21 @@ fn composite_pheromones_array(@builtin(global_invocation_id) id: vec3<u32>) {
     let x = id.x; let y = id.y;
     if (x >= dims.x || y >= dims.y) { return; }
     let coord = vec2<i32>(i32(x), i32(y));
-    // Guarded load: if layers < 3, missing layers are treated as 0
-    let r = textureLoad(p_in_array, coord, 0).x;
-    let g = textureLoad(p_in_array, coord, 1).x;
-    let b = textureLoad(p_in_array, coord, 2).x;
-    textureStore(rgba_out_array, coord, vec4<f32>(r, g, b, 1.0));
-}
-
-// --- Step 1: extract RGBA -> three R32 pheromone textures ---
-@group(0) @binding(0) var rgba_in: texture_storage_2d<rgba32float, read>;
-@group(0) @binding(1) var p_out0: texture_storage_2d<r32float, write>;
-@group(0) @binding(2) var p_out1: texture_storage_2d<r32float, write>;
-@group(0) @binding(3) var p_out2: texture_storage_2d<r32float, write>;
-
-@compute @workgroup_size(8, 8, 1)
-fn extract_pheromones(@builtin(global_invocation_id) id: vec3<u32>) {
-    let dims = textureDimensions(rgba_in);
-    let x = id.x;
-    let y = id.y;
-    if (x >= dims.x || y >= dims.y) { return; }
-    let coord = vec2<i32>(i32(x), i32(y));
-    let c = textureLoad(rgba_in, coord);
-    textureStore(p_out0, coord, vec4<f32>(c.r, 0.0, 0.0, 0.0));
-    textureStore(p_out1, coord, vec4<f32>(c.g, 0.0, 0.0, 0.0));
-    textureStore(p_out2, coord, vec4<f32>(c.b, 0.0, 0.0, 0.0));
-}
-
-// --- Step 2: composite R32 pheromones -> RGBA display ---
-@group(0) @binding(0) var p_in0: texture_storage_2d<r32float, read>;
-@group(0) @binding(1) var p_in1: texture_storage_2d<r32float, read>;
-@group(0) @binding(2) var p_in2: texture_storage_2d<r32float, read>;
-@group(0) @binding(3) var rgba_out: texture_storage_2d<rgba32float, write>;
-
-@compute @workgroup_size(8, 8, 1)
-fn composite_pheromones(@builtin(global_invocation_id) id: vec3<u32>) {
-    let dims = textureDimensions(rgba_out);
-    let x = id.x;
-    let y = id.y;
-    if (x >= dims.x || y >= dims.y) { return; }
-    let coord = vec2<i32>(i32(x), i32(y));
-    let r = textureLoad(p_in0, coord).x;
-    let g = textureLoad(p_in1, coord).x;
-    let b = textureLoad(p_in2, coord).x;
-    textureStore(rgba_out, coord, vec4<f32>(r, g, b, 1.0));
+    var accum = vec3<f32>(0.0, 0.0, 0.0);
+    var total = 0.0;
+    let layer_count = arrayLength(&layer_params_comp);
+    for (var li: u32 = 0u; li < layer_count; li = li + 1u) {
+        let v = textureLoad(p_in_array, coord, i32(li)).x;
+        let p = layer_params_comp[li];
+        accum += v * p.color.rgb;
+        total += v;
+    }
+    // Normalize color by total intensity to preserve hue
+    let color = select(vec3<f32>(0.0, 0.0, 0.0), accum / total, total > 0.0);
+    // Simple tone mapping for brightness from total intensity
+    let exposure = 1.0;
+    let brightness = 1.0 - exp(-total * exposure);
+    textureStore(rgba_out_array, coord, vec4<f32>(color * brightness, 1.0));
 }
 
 // --- Per-pheromone env passes (copy / input / diffuse) ---
@@ -138,7 +121,7 @@ fn composite_pheromones(@builtin(global_invocation_id) id: vec3<u32>) {
 @group(0) @binding(3) var rgba_temp: texture_storage_2d<rgba32float, read_write>;
 @group(0) @binding(4) var<uniform> globals: GlobalUniforms;
 @group(0) @binding(5) var<storage, read> species: array<vec4<f32>>; // placeholder layout
-@group(0) @binding(6) var<uniform> pheromones: PheromoneParams;
+@group(0) @binding(6) var<storage, read> layer_params_env: array<PheromoneLayerParam>;
 
 @compute @workgroup_size(8, 8, 1)
 fn copy_to_temp_phero(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -181,6 +164,8 @@ fn diffuse_phero(@builtin(global_invocation_id) id: vec3<u32>) {
     let y = id.y;
     if (x >= dims.x || y >= dims.y) { return; }
     let dt = globals.delta_time;
+    // For per-texture env passes, use layer 0's params (or later extend to per-texture params)
+    let layer0 = layer_params_env[0u];
     let coord = vec2<i32>(i32(x), i32(y));
     let left   = vec2<i32>(i32(max(1u, x)) - 1, i32(y));
     let right  = vec2<i32>(i32(min(dims.x - 2u, x)) + 1, i32(y));
@@ -192,8 +177,8 @@ fn diffuse_phero(@builtin(global_invocation_id) id: vec3<u32>) {
     let u = textureLoad(temp_phero, up).x;
     let d = textureLoad(temp_phero, down).x;
     let blurred = (c * 4.0 + l + r + u + d) / 8.0;
-    let diff_factor = per_frame_factor(pheromones.diffusion.x, dt);
-    let dec_factor = per_frame_factor(pheromones.decay.x, dt);
+    let diff_factor = per_frame_factor(layer0.diffusion, dt);
+    let dec_factor = per_frame_factor(layer0.decay, dt);
     let mixed = mix(c, blurred, diff_factor);
     let result = mixed * (1.0 - dec_factor);
     textureStore(output_phero, coord, vec4<f32>(result, 0.0, 0.0, 0.0));

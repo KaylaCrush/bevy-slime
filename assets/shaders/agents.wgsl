@@ -1,16 +1,15 @@
 // Agent + RGBA environment compute shader
 
-@group(0) @binding(0) var<storage, read_write> agents: array<SlimeAgent>;
+@group(0) @binding(0) var<storage, read_write> agents: array<Agent>;
 @group(0) @binding(1) var input_tex: texture_storage_2d<rgba32float, read>;
 @group(0) @binding(2) var output_tex: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(3) var temp_tex: texture_storage_2d<rgba32float, read_write>;
 @group(0) @binding(4) var<uniform> globals: GlobalUniforms;
 @group(0) @binding(5) var<storage, read> species: array<SpeciesSettings>;
-@group(0) @binding(6) var<uniform> pheromones: PheromoneParams;
 // Array-based pheromone field: one layer per pheromone (read/write for sensing and deposit)
-@group(0) @binding(7) var phero_array: texture_storage_2d_array<r32float, read_write>;
+@group(0) @binding(6) var phero_array: texture_storage_2d_array<r32float, read_write>;
 
-struct SlimeAgent {
+struct Agent {
     position: vec2<f32>,
     angle: f32,
     species_index: u32,
@@ -32,10 +31,6 @@ struct SpeciesSettings {
     emit: vec4<f32>,
 };
 
-struct PheromoneParams {
-    diffusion: vec4<f32>,
-    decay: vec4<f32>,
-};
 
 struct GlobalUniforms {
     delta_time: f32,
@@ -46,9 +41,6 @@ struct GlobalUniforms {
     right_button_pressed: u32,
 };
 
-fn per_frame_factor(rate: f32, dt: f32) -> f32 {
-    return 1.0 - pow(1.0 - rate, dt);
-}
 
 fn hash_u32(value: u32) -> u32 {
     var state = value;
@@ -64,9 +56,6 @@ fn hash_u32(value: u32) -> u32 {
 fn hash_f32(value: u32) -> f32 {
     return f32(hash_u32(value)) / 4294967295.0;
 }
-
-// Note: diffusion, input and env-copy passes moved to `pheromones.wgsl`.
-// The agent shader now focuses on agent updates and deposits only.
 
 @compute @workgroup_size(64)
 fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -97,13 +86,15 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     agent.position = agent.position + fwd * s.move_speed * dt;
     agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
     let coord = vec2<i32>(i32(agent.position.x), i32(agent.position.y));
-    // Deposit into pheromone array in-place (Approach A): map s.emit.xyz to layers 0..2
+    // Deposit pheromone intensity per layer (color comes from pheromone layer params in composite)
+    let e = s.emit.xyz; // per-layer emission strengths
     let cur_r = textureLoad(phero_array, coord, 0).x;
     let cur_g = textureLoad(phero_array, coord, 1).x;
     let cur_b = textureLoad(phero_array, coord, 2).x;
-    textureStore(phero_array, coord, 0, vec4<f32>(cur_r + s.emit.x, 0.0, 0.0, 0.0));
-    textureStore(phero_array, coord, 1, vec4<f32>(cur_g + s.emit.y, 0.0, 0.0, 0.0));
-    textureStore(phero_array, coord, 2, vec4<f32>(cur_b + s.emit.z, 0.0, 0.0, 0.0));
+    // Scale by dt for frame-rate independent deposition
+    textureStore(phero_array, coord, 0, vec4<f32>(cur_r + e.x * globals.delta_time, 0.0, 0.0, 0.0));
+    textureStore(phero_array, coord, 1, vec4<f32>(cur_g + e.y * globals.delta_time, 0.0, 0.0, 0.0));
+    textureStore(phero_array, coord, 2, vec4<f32>(cur_b + e.z * globals.delta_time, 0.0, 0.0, 0.0));
     agents[index] = agent;
 }
 
