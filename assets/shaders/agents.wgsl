@@ -65,73 +65,8 @@ fn hash_f32(value: u32) -> f32 {
     return f32(hash_u32(value)) / 4294967295.0;
 }
 
-@compute @workgroup_size(8, 8)
-fn copy_to_temp(@builtin(global_invocation_id) id: vec3<u32>) {
-    let dims = textureDimensions(input_tex);
-    let x = id.x;
-    let y = id.y;
-    if (x >= dims.x || y >= dims.y) { return; }
-    let coord = vec2<i32>(i32(x), i32(y));
-    let v = textureLoad(input_tex, coord);
-    textureStore(temp_tex, coord, v);
-}
-
-@compute @workgroup_size(8, 8, 1)
-fn handle_input(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (globals.left_button_pressed == 0u && globals.right_button_pressed == 0u) { return; }
-    let dims = textureDimensions(temp_tex);
-    let x = id.x;
-    let y = id.y;
-    if (x >= dims.x || y >= dims.y) { return; }
-    if (globals.mouse_position.x < -9000.0) { return; }
-    let coord = vec2<i32>(i32(x), i32(y));
-    let pixel_pos = vec2<f32>(f32(x), f32(y));
-    let brush_radius = 80.0;
-    let d = distance(pixel_pos, globals.mouse_position);
-    if (d >= brush_radius) { return; }
-    let t = 1.0 - (d / brush_radius);
-    let brush_strength = pow(t, 2.0);
-    let current = textureLoad(temp_tex, coord);
-    let brush_color: vec4<f32> = select(vec4<f32>(1.0,1.0,1.0,1.0), vec4<f32>(0.0,0.0,0.0,0.0), globals.left_button_pressed != 0u);
-    let altered = mix(current, brush_color, brush_strength);
-    textureStore(temp_tex, coord, altered);
-}
-
-@compute @workgroup_size(8, 8, 1)
-fn diffuse(@builtin(global_invocation_id) id: vec3<u32>) {
-    let dims = textureDimensions(temp_tex);
-    let x = id.x;
-    let y = id.y;
-    if (x >= dims.x || y >= dims.y) { return; }
-    let dt = globals.delta_time;
-    let coord = vec2<i32>(i32(x), i32(y));
-    let left   = vec2<i32>(i32(max(1u, x)) - 1, i32(y));
-    let right  = vec2<i32>(i32(min(dims.x - 2u, x)) + 1, i32(y));
-    let up     = vec2<i32>(i32(x), i32(min(dims.y - 2u, y)) + 1);
-    let down   = vec2<i32>(i32(x), i32(max(1u, y)) - 1);
-    let c = textureLoad(temp_tex, coord);
-    let l = textureLoad(temp_tex, left);
-    let r = textureLoad(temp_tex, right);
-    let u = textureLoad(temp_tex, up);
-    let d = textureLoad(temp_tex, down);
-    let blurred = (c * 4.0 + l + r + u + d) / 8.0;
-    let diff_factors = vec4<f32>(
-        per_frame_factor(pheromones.diffusion.x, dt),
-        per_frame_factor(pheromones.diffusion.y, dt),
-        per_frame_factor(pheromones.diffusion.z, dt),
-        per_frame_factor(pheromones.diffusion.w, dt),
-    );
-    let dec_factors = vec4<f32>(
-        per_frame_factor(pheromones.decay.x, dt),
-        per_frame_factor(pheromones.decay.y, dt),
-        per_frame_factor(pheromones.decay.z, dt),
-        per_frame_factor(pheromones.decay.w, dt),
-    );
-    let mixed = mix(c, blurred, diff_factors);
-    var result = mixed * (vec4<f32>(1.0) - dec_factors);
-    result.w = 1.0;
-    textureStore(output_tex, coord, result);
-}
+// Note: diffusion, input and env-copy passes moved to `pheromones.wgsl`.
+// The agent shader now focuses on agent updates and deposits only.
 
 @compute @workgroup_size(64)
 fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {

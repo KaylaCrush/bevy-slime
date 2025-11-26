@@ -1,3 +1,20 @@
+// Pheromone allocation and pipeline helpers.
+//
+// This module centralizes code that creates the GPU textures and compute
+// pipelines used to simulate pheromone diffusion and decay. The project uses
+// an array-based representation: a single 2D texture array where each layer
+// corresponds to one pheromone channel. Using a 2D array allows us to dispatch
+// a single compute pass with a Z dimension equal to the number of pheromones.
+//
+// Important notes:
+// - Allocation: `make_pheromone_array_images` creates a pair of array textures
+//   (prev/next) which are ping-ponged by the render node.
+// - Pipelines: `init_pheromone_array_pipelines` registers compute pipelines for
+//   diffusion, input (brush), and composite steps. The WGSL shader implements
+//   `diffuse_phero_array`, `handle_input_phero_array`, and `composite_pheromones_array`.
+// - Bind groups created by `create_phero_array_bind_groups` must match the
+//   layout expected by the WGSL entry points. Keep binding indices in sync.
+
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::{
@@ -22,7 +39,7 @@ pub(crate) struct PheromoneArrayImages {
 
 /// Allocate array-based pheromone textures (prev/next), one layer per pheromone.
 pub fn make_pheromone_array_images(images: &mut Assets<Image>) -> PheromoneArrayImages {
-    let mut make_array = || {
+    let make_array = || {
         let mut img = Image::new_target_texture(
             SIZE.x,
             SIZE.y,
@@ -46,6 +63,12 @@ pub fn make_pheromone_array_images(images: &mut Assets<Image>) -> PheromoneArray
     let next = images.add(make_array());
     PheromoneArrayImages { prev, next }
 }
+
+// Initialize GPU pipelines and layouts for array-based pheromone processing.
+//
+// The returned tuple contains the env bind group layout (prev/next array + uniforms),
+// cached pipeline IDs for the diffuse and input passes, and the composite layout/pipeline
+// used to convert the array back into an RGBA display texture.
 
 // Removed legacy per-channel pipeline initialization
 
@@ -121,6 +144,7 @@ pub fn init_pheromone_array_pipelines(
 }
 
 /// Create bind groups for array-based pheromone processing (two pings prev/next)
+#[allow(clippy::too_many_arguments)]
 pub fn create_phero_array_bind_groups(
     render_device: &RenderDevice,
     gpu_images: &RenderAssets<GpuImage>,

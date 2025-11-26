@@ -1,3 +1,11 @@
+// Setup and initialization of images, uniform resources, and agent buffers.
+//
+// This module is responsible for creating the RGBA display textures (two
+// ping-ponged images and a temporary), allocating the pheromone array images
+// (prev/next), and inserting the initial `GlobalUniforms` and `PheromoneUniforms`.
+// It also creates the per-layer parameter buffer used for future per-channel
+// features.
+
 use bevy::prelude::*;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::render_resource::{BufferInitDescriptor, BufferUsages};
@@ -12,6 +20,9 @@ pub fn setup(
     mut images: ResMut<Assets<Image>>,
     render_device: Res<RenderDevice>,
 ) {
+    // Create two RGBA render targets (texture_a/texture_b) used for display
+    // ping-ponging. A third `temp_texture` is used as a working target where
+    // necessary.
     // TEXTURES
     let mut image = Image::new_target_texture(SIZE.x, SIZE.y, bevy::render::render_resource::TextureFormat::Rgba32Float);
     image.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;

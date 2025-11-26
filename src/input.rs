@@ -1,3 +1,9 @@
+// Input handling utilities for mapping OS/window input into the simulation.
+//
+// - `MouseWorldPos` stores the mouse position in world (texture) coordinates
+//   so shaders can read it via the `GlobalUniforms` uniform buffer.
+// - `MouseButtonState` tracks left/right button pressed state for the brush.
+
 use bevy::{input::keyboard, prelude::*};
 
 pub struct InputPlugin;
@@ -20,12 +26,12 @@ fn update_mouse_position(
     mut mouse_pos: ResMut<MouseWorldPos>,
     cameras: Query<(&Camera, &GlobalTransform)>,
 ) {
-    if let Some(ev) = cursor_moved_events.read().last() {
-        if let Ok((camera, camera_transform)) = cameras.single() {
-            if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, ev.position) {
-                mouse_pos.0 = world_pos;
-            }
-        }
+    // Read the most recent cursor move event (if any) and convert to world
+    // coordinates using the active 2D camera. The shader expects mouse
+    // coordinates in the same space as the RGBA/pheromone textures.
+    if let (Some(ev), Ok((camera, camera_transform))) = (cursor_moved_events.read().last(), cameras.single())
+        && let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, ev.position) {
+        mouse_pos.0 = world_pos;
     }
 }
 

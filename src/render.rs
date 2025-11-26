@@ -1,3 +1,24 @@
+// Render / compute integration for the simulation.
+//
+// This module is responsible for creating compute pipeline layouts, preparing
+// bind groups, and scheduling compute dispatches inside the Bevy render graph.
+// Key responsibilities and ordering expectations:
+// - Create the compute pipeline for agent simulation (`update_agents`) which
+//   reads/writes the pheromone array (storage texture array) and updates the
+//   agent storage buffer.
+// - Create array-based pheromone pipelines (diffuse/input/composite) that
+//   operate on a ping-pong pair of 2D texture arrays (prev/next). The render
+//   node alternates an `index` (0/1) to flip which handle is prev/next.
+// - The Render node run order must ensure agents deposit into the correct
+//   ping (the 'next' array) before the array-based diffuse/composite steps
+//   operate on that data for the next frame's visualization.
+//
+// When reading this file, pay attention to bind-group layout 0: it binds the
+// agent buffer, RGBA display targets, uniforms, and a `R32Float` 2D-array
+// used by agents for sensing/depositing. The shader `agents.wgsl` expects
+// those bindings in a fixed layout; changing bindings here requires updating
+// the shader accordingly.
+
 use bevy::prelude::*;
 use bevy::render::{RenderApp, Render, RenderStartup, RenderSystems, render_graph::{self, RenderGraph}};
 use bevy::render::extract_resource::ExtractResourcePlugin;
@@ -42,6 +63,16 @@ impl Plugin for SlimeSimComputePlugin {
     }
 }
 
+/// Initialize the compute pipelines and layouts used by the simulation.
+///
+/// This creates:
+/// - a bind group layout used by the agent compute shader (group 0),
+/// - a compute pipeline for agent simulation (`update_agents`), and
+/// - array-based pheromone pipelines via `init_pheromone_array_pipelines`.
+///
+/// The returned `SlimeSimPipeline` resource stores the cached pipelines and
+/// layouts so the render node can query readiness and dispatch them.
+
 #[derive(Resource)]
 pub struct SlimeSimPipeline {
     pub texture_bind_group_layout: BindGroupLayout,
@@ -62,6 +93,9 @@ fn init_slime_sim_pipeline(
     asset_server: Res<AssetServer>,
     pipeline_cache: Res<PipelineCache>,
 ) {
+    // NOTE: binding indices here are mirrored by the agent shader and by code
+    // that constructs BindGroupEntries in `prepare_bind_group`. Keep the layout
+    // stable when editing shaders.
     // Build bind group layout for group(0)
     let mut entries: Vec<BindGroupLayoutEntry> = Vec::new();
     let mut binding_index = 0u32;
@@ -98,7 +132,6 @@ fn init_slime_sim_pipeline(
         ty: BindingType::StorageTexture { access: StorageTextureAccess::ReadWrite, format: TextureFormat::R32Float, view_dimension: TextureViewDimension::D2Array },
         count: None,
     });
-    binding_index += 1;
     let texture_bind_group_layout = render_device.create_bind_group_layout(
         Some("SlimeSimBindGroupLayout"),
         &entries,
@@ -135,6 +168,7 @@ fn init_slime_sim_pipeline(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_bind_group(
     mut commands: Commands,
     pipeline: Res<SlimeSimPipeline>,
@@ -148,8 +182,16 @@ fn prepare_bind_group(
     render_device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
-    // Copy the body from previous main.prepare_bind_group, but using resources types
-    // (For brevity, this function calls into create_phero_bind_groups for pheromones.)
+    // Prepare bind groups for the current frame. This method:
+    // - resolves GPU `Image` -> `TextureView` handles from `RenderAssets<GpuImage>`,
+    // - writes uniform buffers for `GlobalUniforms` and `PheromoneUniforms`, and
+    // - constructs two bind groups (index 0 and 1) that represent the two ping
+    //   states for the RGBA display textures. The render node will alternate
+    //   which bind group it uses each frame to implement ping-pong rendering.
+    //
+    // It also delegates creation of array-based pheromone bind groups via
+    // `create_phero_array_bind_groups`, which returns per-ping bind groups for
+    // the array-based env/composite passes.
     let Some(image_a) = gpu_images.get(&slime_sim_images.texture_a) else { return; };
     let Some(image_b) = gpu_images.get(&slime_sim_images.texture_b) else { return; };
     let Some(image_temp) = gpu_images.get(&slime_sim_images.temp_texture) else { return; };
@@ -169,7 +211,7 @@ fn prepare_bind_group(
     let Some(phero_next_view) = gpu_images.get(&phero_arrays.next).map(|g| &g.texture_view) else { return; };
 
     // Build bind group entries for group(0)
-    let mut entries0 = vec![
+    let entries0 = vec![
         BindGroupEntry { binding: 0, resource: BindingResource::Buffer(BufferBinding { buffer: &slime_agent_data.buffer, offset: 0, size: None }) },
         BindGroupEntry { binding: 1, resource: BindingResource::TextureView(view_a) },
         BindGroupEntry { binding: 2, resource: BindingResource::TextureView(view_b) },
@@ -187,7 +229,7 @@ fn prepare_bind_group(
         &entries0,
     );
 
-    let mut entries1 = vec![
+    let entries1 = vec![
         BindGroupEntry { binding: 0, resource: BindingResource::Buffer(BufferBinding { buffer: &slime_agent_data.buffer, offset: 0, size: None }) },
         BindGroupEntry { binding: 1, resource: BindingResource::TextureView(view_b) },
         BindGroupEntry { binding: 2, resource: BindingResource::TextureView(view_a) },
@@ -213,7 +255,7 @@ fn prepare_bind_group(
     if let Some((env_ping, comp_ping)) = create_phero_array_bind_groups(
         &render_device,
         &gpu_images,
-        &*phero_arrays,
+        &phero_arrays,
         &pipeline.phero_array_env_layout,
         &pipeline.phero_array_comp_layout,
         view_a,
@@ -275,34 +317,44 @@ impl render_graph::Node for SlimeSimNode {
         let pipeline = world.resource::<SlimeSimPipeline>();
         // Using fixed pheromone bindings in group(0); no separate group(1)
 
+        // The render node alternates between update indices 0 and 1 each
+        // frame; those indices are used to select which ping is "prev" and
+        // which is "next" for the array-based pheromone passes.
         match self.state {
             SlimeSimState::Loading | SlimeSimState::Init => {}
             SlimeSimState::Update(index) => {
                 let Some(agent_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.agent_sim_pipeline) else { return Ok(()); };
 
-                let groups_x = (SIZE.x + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
-                let groups_y = (SIZE.y + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+                let groups_x = SIZE.x.div_ceil(WORKGROUP_SIZE);
+                let groups_y = SIZE.y.div_ceil(WORKGROUP_SIZE);
 
                 let run_config = world.resource::<SlimeSimRunConfig>(); // toggles for agents/array passes
 
-                // Array-based pheromone env passes (diffuse then input) with z-dispatch
-                if let Some(arr_env) = phero_array_env {
-                    let Some(diffuse_array) = pipeline_cache.get_compute_pipeline(pipeline.diffuse_array_pipeline) else { return Ok(()); };
-                    let Some(input_array) = pipeline_cache.get_compute_pipeline(pipeline.input_array_pipeline) else { return Ok(()); };
-                    let mut pass_arr = render_context.command_encoder().begin_compute_pass(&ComputePassDescriptor::default());
-                    pass_arr.set_bind_group(0, &arr_env.0[index], &[]);
-                    pass_arr.set_pipeline(diffuse_array);
-                    pass_arr.dispatch_workgroups(groups_x, groups_y, NUM_PHEROMONES as u32);
-                    pass_arr.set_pipeline(input_array);
-                    pass_arr.dispatch_workgroups(groups_x, groups_y, NUM_PHEROMONES as u32);
-                }
+                            // Array-based pheromone env passes (diffuse then input) with z-dispatch
+                            if let Some(arr_env) = phero_array_env {
+                                let Some(diffuse_array) = pipeline_cache.get_compute_pipeline(pipeline.diffuse_array_pipeline) else { return Ok(()); };
+                                let Some(input_array) = pipeline_cache.get_compute_pipeline(pipeline.input_array_pipeline) else { return Ok(()); };
+                                // Only begin a compute pass if at least one of the array passes is enabled
+                                if run_config.run_diffuse || run_config.run_copy_and_input {
+                                    let mut pass_arr = render_context.command_encoder().begin_compute_pass(&ComputePassDescriptor::default());
+                                    pass_arr.set_bind_group(0, &arr_env.0[index], &[]);
+                                    if run_config.run_diffuse {
+                                        pass_arr.set_pipeline(diffuse_array);
+                                        pass_arr.dispatch_workgroups(groups_x, groups_y, NUM_PHEROMONES as u32);
+                                    }
+                                    if run_config.run_copy_and_input {
+                                        pass_arr.set_pipeline(input_array);
+                                        pass_arr.dispatch_workgroups(groups_x, groups_y, NUM_PHEROMONES as u32);
+                                    }
+                                }
+                            }
 
                 if run_config.run_agents {
                     let mut pass2 = render_context.command_encoder().begin_compute_pass(&ComputePassDescriptor::default());
                     pass2.set_bind_group(0, &bind_groups[index], &[]);
                     // No group(1) needed
                     pass2.set_pipeline(agent_pipeline);
-                    let agent_groups = (crate::agents::NUM_AGENTS + crate::agents::AGENT_WORKGROUP_SIZE - 1) / crate::agents::AGENT_WORKGROUP_SIZE;
+                    let agent_groups = crate::agents::NUM_AGENTS.div_ceil(crate::agents::AGENT_WORKGROUP_SIZE);
                     pass2.dispatch_workgroups(agent_groups, 1, 1);
                 }
 

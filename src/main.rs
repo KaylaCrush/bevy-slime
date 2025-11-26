@@ -1,3 +1,7 @@
+// Application entry: assemble Bevy app, register plugins, and wire startup
+// systems. The order here matters: we ensure species and buffers are created
+// during `Startup` before the render sub-app extracts resources.
+
 use bevy::prelude::*;
 use bevy::window::{Window, WindowMode, WindowPlugin};
 
@@ -25,7 +29,12 @@ fn main() {
             SlimeSimComputePlugin,
             InputPlugin,
         ))
+        // Startup systems: spawn species, upload species buffer, and create
+        // textures/agents. The chain ensures species are created before we
+        // attempt to upload them to the GPU.
         .add_systems(Startup, (species::spawn_default_species, species::upload_species_to_gpu, setup::setup).chain())
+        // Update systems: alternate display textures, push CPU agent changes
+        // to the GPU, and refresh global uniforms (mouse/frames/time).
         .add_systems(Update, (setup::switch_textures, agents::sync_agents_to_gpu, setup::update_globals_uniform))
         .run();
 }

@@ -1,3 +1,11 @@
+// Agent CPU/GPU bridge and helpers
+//
+// This module maintains a CPU-side `Vec` of agents (for easy initialization
+// and UI manipulation) and a GPU storage buffer containing the same data in
+// tightly-packed shader-friendly form. The compute shader `agents.wgsl` reads
+// this storage buffer and performs per-agent updates, sensing pheromones from
+// the `R32` texture array and depositing into it.
+
 use bevy::prelude::*;
 use bevy::render::renderer::{RenderQueue, RenderDevice};
 use bevy::render::render_resource::{Buffer, ShaderType};
@@ -16,6 +24,11 @@ pub struct SlimeAgentData {
     pub angle: f32,
     pub species_index: u32,
 }
+
+/// Write the CPU `AgentsCpu` list into the GPU `AgentGpuBuffer`.
+/// This is invoked each frame from the `setup::update` stage when the CPU-side
+/// agents are modified. The GPU buffer is `COPY_DST` so we update it with a
+/// `RenderQueue::write_buffer` call.
 
 #[derive(Resource)]
 pub struct AgentsCpu {
@@ -47,6 +60,8 @@ pub fn init_agents(
     num_agents: u32,
     species_count: u32,
 ) {
+    // Create `NUM_AGENTS` agents arranged in a disc around the center. This is
+    // intentionally deterministic and compact to fit well into the GPU buffer.
     let mut agents: Vec<SlimeAgentData> = Vec::with_capacity(num_agents as usize);
     // Use the crate's convenient RNG (renamed API) instead of deprecated `thread_rng`
     let mut rng = rand::rng();
@@ -56,7 +71,7 @@ pub fn init_agents(
     for i in 0..num_agents {
         let angle = rng.random_range(0.0..std::f32::consts::TAU);
         let r = radius * rng.random_range(0.0_f32..1.0_f32).sqrt();
-        let index = (i % species_count as u32) as u32;
+        let index = i % species_count;
         let pos = center + Vec2::new(angle.cos() * r, angle.sin() * r);
         let dir_vec = (center - pos).normalize_or_zero();
         let dir = dir_vec.y.atan2(dir_vec.x);

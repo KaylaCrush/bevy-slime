@@ -1,3 +1,11 @@
+// Species authoring and GPU upload helpers.
+//
+// This module provides a compact authoring API (components such as
+// `MoveSpeed`, `Sensor`, and `EmitsPheromone`) that are attached to a small
+// number of species entities. Those entities are then converted into a tightly
+// packed `SpeciesSettings` buffer uploaded to the GPU for use by the agent
+// compute shader.
+
 use bevy::prelude::*;
 use bevy::math::Vec4;
 use bevy::render::renderer::RenderDevice;
@@ -67,14 +75,6 @@ pub fn build_species_settings_from_components(
     avoid: Option<&AvoidsPheromone>,
     emit: Option<&EmitsPheromone>,
 ) -> SpeciesSettings {
-    let mut settings = SpeciesSettings::default();
-    settings.color = **color;
-    settings.move_speed = **move_speed;
-    settings.turn_speed = **turn_speed;
-    settings.sensor_angle_degrees = sensor.angle_degrees;
-    settings.sensor_offset_dst = sensor.offset_dst;
-    settings.sensor_size = sensor.size;
-
     // Build weights: positive = follow, negative = avoid
     let mut weights = Vec4::ZERO;
     if let Some(f) = follow {
@@ -85,7 +85,6 @@ pub fn build_species_settings_from_components(
         let mask = channel_to_mask(a.channel);
         weights -= mask * a.strength;
     }
-    settings.weights = weights;
 
     // Build per-channel emission
     let mut emit_v = Vec4::ZERO;
@@ -95,8 +94,18 @@ pub fn build_species_settings_from_components(
     }
     // Do not deposit into alpha channel; it's used only for display visibility
     emit_v.w = 0.0;
-    settings.emit = emit_v;
-    settings
+
+    SpeciesSettings {
+        move_speed: **move_speed,
+        turn_speed: **turn_speed,
+        sensor_angle_degrees: sensor.angle_degrees,
+        sensor_offset_dst: sensor.offset_dst,
+        sensor_size: sensor.size,
+        color: **color,
+        weights,
+        emit: emit_v,
+        ..Default::default()
+    }
 }
 
 fn channel_to_mask(channel: u32) -> Vec4 {
@@ -109,6 +118,91 @@ fn channel_to_mask(channel: u32) -> Vec4 {
         _ => Vec4::new(0.0, 0.0, 0.0, 1.0),
     }
 }
+
+
+
+// Spawn three default slime species to match the current shader/channel assumptions (RGB)
+pub fn spawn_default_species(mut commands: Commands) {
+    // Red species (channel 0)
+    commands.spawn((
+        SlimeSpecies,
+        AgentColor(Vec4::new(1.0, 0.0, 0.0, 1.0)),
+        MoveSpeed(30.0),
+        TurnSpeed(6.0),
+        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
+        FollowsPheromone { channel: 0, strength: 1.0 },
+        AvoidsPheromone { channel: 1, strength: 1.0 },
+        EmitsPheromone { channel: 0, amount: 1.0 },
+    ));
+
+    // Green species (channel 1)
+    commands.spawn((
+        SlimeSpecies,
+        AgentColor(Vec4::new(0.0, 1.0, 0.0, 1.0)),
+        MoveSpeed(30.0),
+        TurnSpeed(6.0),
+        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
+        FollowsPheromone { channel: 1, strength: 1.0 },
+        AvoidsPheromone { channel: 2, strength: 1.0 },
+        EmitsPheromone { channel: 1, amount: 1.0 },
+    ));
+
+    // Blue species (channel 2)
+    commands.spawn((
+        SlimeSpecies,
+        AgentColor(Vec4::new(0.0, 0.0, 1.0, 1.0)),
+        MoveSpeed(30.0),
+        TurnSpeed(6.0),
+        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
+        FollowsPheromone { channel: 2, strength: 1.0 },
+        AvoidsPheromone { channel: 0, strength: 1.0 },
+        EmitsPheromone { channel: 2, amount: 1.0 },
+    ));
+}
+
+/// Build a GPU buffer from authored SlimeSpecies entities and upload as SpeciesGpuBuffer resource.
+/// If no species are authored, falls back to the default RGB trio.
+#[allow(clippy::type_complexity)]
+pub fn upload_species_to_gpu(
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    query: Query<
+        (
+            &AgentColor,
+            &MoveSpeed,
+            &TurnSpeed,
+            &Sensor,
+            Option<&FollowsPheromone>,
+            Option<&AvoidsPheromone>,
+            Option<&EmitsPheromone>,
+        ),
+        With<SlimeSpecies>,
+    >,
+)
+{
+    let mut species: Vec<SpeciesSettings> = query
+        .iter()
+        .map(|(color, move_speed, turn_speed, sensor, follow, avoid, emit)| {
+            build_species_settings_from_components(color, move_speed, turn_speed, sensor, follow, avoid, emit)
+        })
+        .collect();
+
+    if species.is_empty() {
+        species = vec![
+            SpeciesSettings::red(),
+            SpeciesSettings::green(),
+            SpeciesSettings::blue(),
+        ];
+    }
+
+    let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("Species settings buffer"),
+        contents: bytemuck::cast_slice(&species),
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+    });
+    commands.insert_resource(crate::resources::SpeciesGpuBuffer { buffer });
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -152,85 +246,4 @@ mod tests {
         assert!(settings.emit.z > 0.0);
         assert_eq!(settings.emit.w, 0.0);
     }
-}
-
-// Spawn three default slime species to match the current shader/channel assumptions (RGB)
-pub fn spawn_default_species(mut commands: Commands) {
-    // Red species (channel 0)
-    commands.spawn((
-        SlimeSpecies,
-        AgentColor(Vec4::new(1.0, 0.0, 0.0, 1.0)),
-        MoveSpeed(30.0),
-        TurnSpeed(6.0),
-        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
-        FollowsPheromone { channel: 0, strength: 1.0 },
-        AvoidsPheromone { channel: 1, strength: 1.0 },
-        EmitsPheromone { channel: 0, amount: 1.0 },
-    ));
-
-    // Green species (channel 1)
-    commands.spawn((
-        SlimeSpecies,
-        AgentColor(Vec4::new(0.0, 1.0, 0.0, 1.0)),
-        MoveSpeed(30.0),
-        TurnSpeed(6.0),
-        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
-        FollowsPheromone { channel: 1, strength: 1.0 },
-        AvoidsPheromone { channel: 2, strength: 1.0 },
-        EmitsPheromone { channel: 1, amount: 1.0 },
-    ));
-
-    // Blue species (channel 2)
-    commands.spawn((
-        SlimeSpecies,
-        AgentColor(Vec4::new(0.0, 0.0, 1.0, 1.0)),
-        MoveSpeed(30.0),
-        TurnSpeed(6.0),
-        Sensor { angle_degrees: 30.0, offset_dst: 35.0, size: 1.0 },
-        FollowsPheromone { channel: 2, strength: 1.0 },
-        AvoidsPheromone { channel: 0, strength: 1.0 },
-        EmitsPheromone { channel: 2, amount: 1.0 },
-    ));
-}
-
-/// Build a GPU buffer from authored SlimeSpecies entities and upload as SpeciesGpuBuffer resource.
-/// If no species are authored, falls back to the default RGB trio.
-pub fn upload_species_to_gpu(
-    mut commands: Commands,
-    render_device: Res<RenderDevice>,
-    query: Query<
-        (
-            &AgentColor,
-            &MoveSpeed,
-            &TurnSpeed,
-            &Sensor,
-            Option<&FollowsPheromone>,
-            Option<&AvoidsPheromone>,
-            Option<&EmitsPheromone>,
-        ),
-        With<SlimeSpecies>,
-    >,
-)
-{
-    let mut species: Vec<SpeciesSettings> = query
-        .iter()
-        .map(|(color, move_speed, turn_speed, sensor, follow, avoid, emit)| {
-            build_species_settings_from_components(color, move_speed, turn_speed, sensor, follow, avoid, emit)
-        })
-        .collect();
-
-    if species.is_empty() {
-        species = vec![
-            SpeciesSettings::red(),
-            SpeciesSettings::green(),
-            SpeciesSettings::blue(),
-        ];
-    }
-
-    let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("Species settings buffer"),
-        contents: bytemuck::cast_slice(&species),
-        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-    });
-    commands.insert_resource(crate::resources::SpeciesGpuBuffer { buffer });
 }

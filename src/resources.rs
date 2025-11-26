@@ -1,3 +1,10 @@
+// Shared resources and GPU-friendly data types used across the app and render
+// sub-app. This file defines the shader parameter structs, global uniforms,
+// image handles, and small configuration flags used by the render node.
+//
+// Keep types declared here in sync with the WGSL shader layouts (names and
+// field ordering must match).
+
 use bevy::prelude::*;
 use bevy::render::extract_resource::ExtractResource;
 use bytemuck::{Pod, Zeroable};
@@ -86,6 +93,7 @@ pub struct PheromoneLayerParam {
 
 #[derive(Resource, Clone, ExtractResource)]
 pub struct PheromoneLayerParamsBuffer {
+    #[allow(dead_code)]
     pub buffer: bevy::render::render_resource::Buffer,
 }
 
@@ -115,6 +123,11 @@ pub struct PheroArrayCompositeBindGroups(pub [bevy::render::render_resource::Bin
 
 #[derive(Resource, Clone, ExtractResource)]
 pub struct SlimeSimRunConfig {
+    // Flags to control which simulation stages run. Useful for debugging or
+    // for stepping parts of the pipeline individually:
+    // - `run_copy_and_input`: enable the copy/input (brush) pass for pheromones
+    // - `run_diffuse`: enable the diffusion/decay pass for pheromones
+    // - `run_agents`: enable the agent compute pass
     pub run_copy_and_input: bool,
     pub run_diffuse: bool,
     pub run_agents: bool,
