@@ -7,6 +7,8 @@
 @group(0) @binding(4) var<uniform> globals: GlobalUniforms;
 @group(0) @binding(5) var<storage, read> species: array<SpeciesSettings>;
 @group(0) @binding(6) var<uniform> pheromones: PheromoneParams;
+// Array-based pheromone field: one layer per pheromone (read/write for sensing and deposit)
+@group(0) @binding(7) var phero_array: texture_storage_2d_array<r32float, read_write>;
 
 struct SlimeAgent {
     position: vec2<f32>,
@@ -160,16 +162,23 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     agent.position = agent.position + fwd * s.move_speed * dt;
     agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
     let coord = vec2<i32>(i32(agent.position.x), i32(agent.position.y));
-    let old = textureLoad(temp_tex, coord);
-    let added = s.emit;
-    textureStore(output_tex, coord, old + added);
+    // Deposit into pheromone array in-place (Approach A): map s.emit.xyz to layers 0..2
+    let cur_r = textureLoad(phero_array, coord, 0).x;
+    let cur_g = textureLoad(phero_array, coord, 1).x;
+    let cur_b = textureLoad(phero_array, coord, 2).x;
+    textureStore(phero_array, coord, 0, vec4<f32>(cur_r + s.emit.x, 0.0, 0.0, 0.0));
+    textureStore(phero_array, coord, 1, vec4<f32>(cur_g + s.emit.y, 0.0, 0.0, 0.0));
+    textureStore(phero_array, coord, 2, vec4<f32>(cur_b + s.emit.z, 0.0, 0.0, 0.0));
     agents[index] = agent;
 }
 
 // helpers (sense, sample_signal, bounce, etc.)
-fn sample_signal(pos: vec2<i32>, mask: vec4<f32>) -> f32 {
-    let c = textureLoad(temp_tex, pos);
-    return dot(c.xyz, mask.xyz);
+fn sample_signal(pos: vec2<i32>, weights: vec3<f32>) -> f32 {
+    // Read from array layers 0..2 and combine by weights
+    let r = textureLoad(phero_array, pos, 0).x;
+    let g = textureLoad(phero_array, pos, 1).x;
+    let b = textureLoad(phero_array, pos, 2).x;
+    return r * weights.x + g * weights.y + b * weights.z;
 }
 
 fn sense(position: vec2<f32>, angle: f32, s: SpeciesSettings, globals: GlobalUniforms) -> f32 {
@@ -183,7 +192,7 @@ fn sense(position: vec2<f32>, angle: f32, s: SpeciesSettings, globals: GlobalUni
         for (var oy = -r; oy <= r; oy++) {
             let sx = clamp(cx + ox, 0, i32(globals.screen_size.x) - 1);
             let sy = clamp(cy + oy, 0, i32(globals.screen_size.y) - 1);
-            let signal = sample_signal(vec2<i32>(sx, sy), s.weights);
+            let signal = sample_signal(vec2<i32>(sx, sy), s.weights.xyz);
             sum += signal;
         }
     }
