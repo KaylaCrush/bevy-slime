@@ -40,6 +40,8 @@ struct GlobalUniforms {
     screen_size: vec2<f32>,
     left_button_pressed: u32,
     right_button_pressed: u32,
+    species_offset: u32,
+    species_count: u32,
 };
 
 struct PheroControl {
@@ -82,7 +84,8 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = id.x;
     if (index >= arrayLength(&agents)) { return; }
     var agent = agents[index];
-    let s = species[agent.species_index];
+    let species_index = (agent.species_index + globals.species_offset) % globals.species_count;
+    let s = species[species_index];
     let dt = globals.delta_time;
     let px = bitcast<u32>(agent.position.x);
     let py = bitcast<u32>(agent.position.y);
@@ -108,7 +111,7 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     var w_left = 0.0;
     var w_right = 0.0;
     let lc = phero_ctrl.layer_count;
-    let base = weight_base(agent.species_index, lc);
+    let base = weight_base(species_index, lc);
     if (r == 0) {
         w_forward = sample_signal_ext_with_base(vec2<i32>(cx_f, cy_f), base, lc);
         w_left    = sample_signal_ext_with_base(vec2<i32>(cx_l, cy_l), base, lc);

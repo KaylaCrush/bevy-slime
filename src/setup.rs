@@ -97,6 +97,8 @@ pub fn setup(
         screen_size: SIZE.as_vec2(),
         left_button_pressed: 0,
         right_button_pressed: 0,
+        species_offset: 0,
+        species_count: crate::NUM_SPECIES,
     });
 
     // Legacy PheromoneUniforms removed; using per-layer param buffer below
@@ -145,7 +147,7 @@ pub fn setup(
     });
 
     // Initialize agents (agent module takes care of CPU/GPU agent resources)
-    let species_count = 3u32; // kept simple; authoring plugin can update later
+    let species_count = crate::NUM_SPECIES; // kept simple; authoring plugin can update later
     agents::init_agents(
         &mut commands,
         &render_device,

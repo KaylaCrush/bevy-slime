@@ -84,6 +84,8 @@ pub struct GlobalUniforms {
 
     pub left_button_pressed: u32,
     pub right_button_pressed: u32,
+    pub species_offset: u32,
+    pub species_count: u32,
 }
 
 // Removed legacy PheromoneUniforms (RGBA-era). Diffusion/decay now live in per-layer params.

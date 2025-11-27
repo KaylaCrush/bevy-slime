@@ -39,17 +39,7 @@ pub struct Sensor {
 #[derive(Component, Deref, DerefMut)]
 pub struct AgentColor(pub Vec4);
 
-#[derive(Component)]
-pub struct FollowsPheromone {
-    pub channel: u32,
-    pub strength: f32,
-}
-
-#[derive(Component)]
-pub struct AvoidsPheromone {
-    pub channel: u32,
-    pub strength: f32,
-}
+// Legacy follow/avoid components removed; LayerWeights now encode full sensing biases.
 
 #[derive(Component)]
 pub struct EmitsPheromone {
@@ -76,8 +66,6 @@ pub fn build_species_settings_from_components(
     move_speed: &MoveSpeed,
     turn_speed: &TurnSpeed,
     sensor: &Sensor,
-    _follow: Option<&FollowsPheromone>,
-    _avoid: Option<&AvoidsPheromone>,
     emit: Option<&EmitsPheromone>,
 ) -> SpeciesSettings {
     // Build emission: single layer index + amount (weights now handled directly into dense buffer)
@@ -118,12 +106,10 @@ pub fn spawn_default_species(mut commands: Commands) {
             offset_dst: 25.0,
             size: 0.0,
         },
-        FollowsPheromone { channel: 2, strength: 1.5 },
-        AvoidsPheromone { channel: 3, strength: 1.0 },
         EmitsPheromone { channel: 2, amount: 0.6 },
         // Layer weights override: emphasize its own channel strongly, avoid next
         // [L0 hate, L1 love, L2 self, L3 next, L4 other]
-        LayerWeights(vec![0.0, 0.0, 1.5, -1.0, 0.2]),
+        LayerWeights(vec![-1.0, 1.0, 1.5, -1.0, 0.2]),
     ));
 
     // Green species (channel 3): twitchy scout (medium speed, high turning, wide sensing)
@@ -137,11 +123,9 @@ pub fn spawn_default_species(mut commands: Commands) {
             offset_dst: 30.0,
             size: 0.0,
         },
-        FollowsPheromone { channel: 3, strength: 1.1 },
-        AvoidsPheromone { channel: 4, strength: 0.8 },
         EmitsPheromone { channel: 3, amount: 1.2 },
         // Broader sensing with moderate biases
-        LayerWeights(vec![0.0, 0.3, 0.2, 1.0, -0.6]),
+        LayerWeights(vec![-1.0, 1.0, 0.2, 1.0, -0.6]),
     ));
 
     // Blue species (channel 4): whirl drifter (mid speed, high turning, wide sensing)
@@ -155,13 +139,10 @@ pub fn spawn_default_species(mut commands: Commands) {
             offset_dst: 28.0,
             size: 0.0,
         },
-        FollowsPheromone { channel: 4, strength: 1.1 },
-        // Steer strongly away from "hate" boundary channel and a bit from purple (2)
-        AvoidsPheromone { channel: 0, strength: 1.2 },
         EmitsPheromone { channel: 4, amount: 2.0 },
         // Broader curiosity: attracted to love(1) and self(4), slight avoidance of purple(2)
         // [L0 hate, L1 love, L2 purple, L3 yellow, L4 blue]
-        LayerWeights(vec![0.0, 0.5, -0.6, 0.2, 1.1]),
+        LayerWeights(vec![-1.0, 1.0, -0.6, 0.2, 1.1]),
     ));
 }
 
@@ -178,8 +159,6 @@ pub fn upload_species_to_gpu(
             &MoveSpeed,
             &TurnSpeed,
             &Sensor,
-            Option<&FollowsPheromone>,
-            Option<&AvoidsPheromone>,
             Option<&EmitsPheromone>,
             Option<&LayerWeights>,
         ),
@@ -189,14 +168,11 @@ pub fn upload_species_to_gpu(
     // Collect species settings and optional extended arrays aligned by index
     let mut species: Vec<SpeciesSettings> = Vec::new();
     let mut layer_w: Vec<Option<Vec<f32>>> = Vec::new();
-    // Also collect simple follow/avoid authoring to apply into dense weights when no override
-    let mut fa_rules: Vec<(Option<(u32, f32)>, Option<(u32, f32)>)> = Vec::new();
-    for (color, move_speed, turn_speed, sensor, follow, avoid, emit, wext) in query.iter() {
+    for (color, move_speed, turn_speed, sensor, emit, wext) in query.iter() {
         species.push(build_species_settings_from_components(
-            color, move_speed, turn_speed, sensor, follow, avoid, emit,
+            color, move_speed, turn_speed, sensor, emit,
         ));
         layer_w.push(wext.map(|v| v.0.clone()));
-        fa_rules.push((follow.map(|f| (f.channel, f.strength)), avoid.map(|a| (a.channel, a.strength))));
     }
 
     let buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
@@ -216,14 +192,6 @@ pub fn upload_species_to_gpu(
         if let Some(w_override) = &layer_w.get(si).and_then(|o| o.as_ref()) {
             let n = layer_count.min(w_override.len() as u32);
             for li in 0..n { weights[(base + li) as usize] = w_override[li as usize]; }
-        } else {
-            // Apply authored follow/avoid simple rules directly to dense array
-            if let Some((ch, stren)) = fa_rules[si].0 {
-                if ch < layer_count { weights[(base + ch) as usize] += stren; }
-            }
-            if let Some((ch, stren)) = fa_rules[si].1 {
-                if ch < layer_count { weights[(base + ch) as usize] -= stren; }
-            }
         }
     }
 
@@ -264,20 +232,14 @@ where
             &'a MoveSpeed,
             &'a TurnSpeed,
             &'a Sensor,
-            Option<&'a FollowsPheromone>,
-            Option<&'a AvoidsPheromone>,
             Option<&'a EmitsPheromone>,
         ),
     >,
 {
     iter.into_iter()
-        .map(
-            |(color, move_speed, turn_speed, sensor, follow, avoid, emit)| {
-                build_species_settings_from_components(
-                    color, move_speed, turn_speed, sensor, follow, avoid, emit,
-                )
-            },
-        )
+        .map(|(color, move_speed, turn_speed, sensor, emit)| {
+            build_species_settings_from_components(color, move_speed, turn_speed, sensor, emit)
+        })
         .collect()
 }
 
@@ -297,14 +259,6 @@ mod tests {
             offset_dst: 5.0,
             size: 2.0,
         };
-        let follow = FollowsPheromone {
-            channel: 0,
-            strength: 0.5,
-        };
-        let avoid = AvoidsPheromone {
-            channel: 1,
-            strength: 0.25,
-        };
         let emit = EmitsPheromone {
             channel: 2,
             amount: 0.75,
@@ -315,8 +269,6 @@ mod tests {
             &move_speed,
             &turn_speed,
             &sensor,
-            Some(&follow),
-            Some(&avoid),
             Some(&emit),
         );
 
@@ -345,8 +297,6 @@ mod tests {
             &turn_speed,
             &sensor,
             None,
-            None,
-            None,
         );
 
         // no emission configured
@@ -363,28 +313,12 @@ mod tests {
             offset_dst: 5.0,
             size: 2.0,
         };
-        let follow = FollowsPheromone {
-            channel: 0,
-            strength: 0.5,
-        };
-        let avoid = AvoidsPheromone {
-            channel: 1,
-            strength: 0.25,
-        };
         let emit = EmitsPheromone {
             channel: 2,
             amount: 0.75,
         };
 
-        let items = vec![(
-            &color,
-            &move_speed,
-            &turn_speed,
-            &sensor,
-            Some(&follow),
-            Some(&avoid),
-            Some(&emit),
-        )];
+        let items = vec![(&color, &move_speed, &turn_speed, &sensor, Some(&emit))];
 
         let list = collect_species_settings_from_refs(items);
         assert_eq!(list.len(), 1);

@@ -16,7 +16,9 @@ pub const WORKGROUP_SIZE: u32 = 16;
 
 // Agent simulation
 pub const AGENT_WORKGROUP_SIZE: u32 = 256;
-pub const NUM_AGENTS: u32 = 1000000;
+pub const NUM_AGENTS: u32 = 100000;
+// Number of authored species/archetypes
+pub const NUM_SPECIES: u32 = 3;
 
 // Shader asset paths
 pub const AGENTS_SHADER_PATH: &str = "shaders/agents.wgsl";
@@ -70,6 +72,7 @@ fn main() {
                 species::spawn_default_species,
                 species::upload_species_to_gpu,
                 setup::setup,
+                agents::init_species_rotation_timer,
             )
                 .chain(),
         )
@@ -79,6 +82,7 @@ fn main() {
             Update,
             (
                 setup::switch_textures,
+                agents::rotate_agent_species,
                 agents::sync_agents_to_gpu,
                 setup::update_globals_uniform,
                 setup::update_brush_layer_text,

@@ -37,6 +37,25 @@ pub struct AgentGpuBuffer {
     pub buffer: Buffer,
 }
 
+#[derive(Resource)]
+pub struct SpeciesRotationTimer(pub Timer);
+
+pub fn init_species_rotation_timer(mut commands: Commands) {
+    commands.insert_resource(SpeciesRotationTimer(Timer::from_seconds(20.0, TimerMode::Repeating)));
+}
+
+pub fn rotate_agent_species(
+    time: Res<Time>,
+    mut timer: ResMut<SpeciesRotationTimer>,
+    mut globals: ResMut<crate::resources::GlobalUniforms>,
+) {
+    timer.0.tick(time.delta());
+    if !timer.0.just_finished() {
+        return;
+    }
+    globals.species_offset = (globals.species_offset + 1) % crate::NUM_SPECIES;
+}
+
 pub fn sync_agents_to_gpu(
     agents_cpu: Res<AgentsCpu>,
     agents_gpu: Res<AgentGpuBuffer>,
