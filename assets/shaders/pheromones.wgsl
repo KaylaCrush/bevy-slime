@@ -123,9 +123,9 @@ fn composite_pheromones_array(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     // Normalize color by total intensity to preserve hue
     let color = select(vec3<f32>(0.0, 0.0, 0.0), accum / total, total > 0.0);
-    // Simple tone mapping for brightness from total intensity
-    let exposure = 1.0;
-    let brightness = 1.0 - exp(-total * exposure);
+    // Cheap tone mapping for brightness from total intensity (avoids exp)
+    // approx of 1 - exp(-x): x / (1 + x)
+    let brightness = total / (1.0 + total);
     textureStore(rgba_out_array, coord, vec4<f32>(color * brightness, 1.0));
 }
 

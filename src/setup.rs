@@ -27,6 +27,7 @@ pub struct FpsCounter {
     pub acc_time: f32,
     pub frames: u32,
     pub fps: f32,
+    pub ms: f32,
 }
 
 #[derive(Resource, Clone)]
@@ -67,9 +68,9 @@ pub fn setup(
     commands.spawn(Camera2d);
 
     // Minimal on-screen text: show current brush target layer and FPS (top-left-ish)
-    commands.insert_resource(FpsCounter { acc_time: 0.0, frames: 0, fps: 0.0 });
+    commands.insert_resource(FpsCounter { acc_time: 0.0, frames: 0, fps: 0.0, ms: 0.0 });
     commands.spawn((
-        Text::new(format!("Layer: {} | FPS: --", phero_cfg.brush_target_layer)),
+        Text::new(format!("Layer: {} | FPS: -- | ms: --", phero_cfg.brush_target_layer)),
         TextFont { font_size: 18.0, ..default() },
         TextColor(Color::WHITE),
         Transform::from_translation(Vec3::new(
@@ -200,7 +201,8 @@ pub fn update_brush_layer_text(
     if !cfg.is_changed() { return; }
     for mut t in &mut q {
         let fps_disp = if fps.fps > 0.0 { format!("{:.0}", fps.fps) } else { "--".to_string() };
-        *t = Text::new(format!("Layer: {} | FPS: {}", cfg.brush_target_layer, fps_disp));
+        let ms_disp = if fps.ms > 0.0 { format!("{:.1}", fps.ms) } else { "--".to_string() };
+        *t = Text::new(format!("Layer: {} | FPS: {} | ms: {}", cfg.brush_target_layer, fps_disp, ms_disp));
     }
 }
 
@@ -214,12 +216,16 @@ pub fn update_fps_counter(
     counter.acc_time += time.delta_secs();
     counter.frames += 1;
     if counter.acc_time >= 0.25 {
-        counter.fps = (counter.frames as f32) / counter.acc_time.max(1e-6);
+        let frames_f = counter.frames as f32;
+        let acc = counter.acc_time.max(1e-6);
+        counter.fps = frames_f / acc;
+        counter.ms = (acc / frames_f) * 1000.0;
         counter.acc_time = 0.0;
         counter.frames = 0;
         let fps_disp = format!("{:.0}", counter.fps);
+        let ms_disp = format!("{:.1}", counter.ms);
         for mut t in &mut q {
-            *t = Text::new(format!("Layer: {} | FPS: {}", cfg.brush_target_layer, fps_disp));
+            *t = Text::new(format!("Layer: {} | FPS: {} | ms: {}", cfg.brush_target_layer, fps_disp, ms_disp));
         }
     }
 }

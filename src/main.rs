@@ -11,7 +11,7 @@ use bevy::window::{Window, WindowMode, WindowPlugin};
 
 // Display and simulation dimensions
 pub const DISPLAY_FACTOR: u32 = 1;
-pub const SIZE: UVec2 = UVec2::new(1920 / DISPLAY_FACTOR, 1440 / DISPLAY_FACTOR);
+pub const SIZE: UVec2 = UVec2::new(1920 / DISPLAY_FACTOR, 1080 / DISPLAY_FACTOR);
 pub const WORKGROUP_SIZE: u32 = 16;
 
 // Agent simulation

@@ -134,8 +134,9 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     agent.angle = dir;
     let fwd = vec2<f32>(cos(agent.angle), sin(agent.angle));
     agent.position = agent.position + fwd * s.move_speed * dt;
-    // Wrap around screen edges instead of bouncing
-    agent.position = wrap_if_needed(agent.position, globals.screen_size);
+    // Bounce from screen edges and clamp slightly inside to prevent sticking
+    agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
+    agent.position = keep_inside(agent.position, globals.screen_size);
     let coord = vec2<i32>(i32(agent.position.x), i32(agent.position.y));
     // Deposit only to the species' configured emit layer
     let el = i32(s.emit_layer);
@@ -158,6 +159,14 @@ fn bounce_if_needed(position: vec2<f32>, direction: f32, size: vec2<f32>) -> f32
         dir = -dir;
     }
     return dir;
+}
+
+fn keep_inside(position: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
+    let eps = 0.25;
+    return vec2<f32>(
+        clamp(position.x, eps, size.x - 1.0 - eps),
+        clamp(position.y, eps, size.y - 1.0 - eps),
+    );
 }
 
 fn wrap_if_needed(position: vec2<f32>, size: vec2<f32>) -> vec2<f32> {

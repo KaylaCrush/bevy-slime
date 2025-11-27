@@ -116,7 +116,7 @@ pub fn spawn_default_species(mut commands: Commands) {
         Sensor {
             angle_degrees: 12.0,
             offset_dst: 25.0,
-            size: 1.0,
+            size: 0.0,
         },
         FollowsPheromone { channel: 2, strength: 1.5 },
         AvoidsPheromone { channel: 3, strength: 1.0 },
@@ -135,7 +135,7 @@ pub fn spawn_default_species(mut commands: Commands) {
         Sensor {
             angle_degrees: 60.0,
             offset_dst: 30.0,
-            size: 2.0,
+            size: 0.0,
         },
         FollowsPheromone { channel: 3, strength: 1.1 },
         AvoidsPheromone { channel: 4, strength: 0.8 },
@@ -153,7 +153,7 @@ pub fn spawn_default_species(mut commands: Commands) {
         Sensor {
             angle_degrees: 75.0,
             offset_dst: 28.0,
-            size: 2.0,
+            size: 0.0,
         },
         FollowsPheromone { channel: 4, strength: 1.1 },
         // Steer strongly away from "hate" boundary channel and a bit from purple (2)
@@ -285,7 +285,7 @@ where
 mod tests {
     use super::*;
 
-    
+
 
     #[test]
     fn build_species_packs_weights_and_emit() {
