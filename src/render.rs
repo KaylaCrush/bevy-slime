@@ -27,7 +27,7 @@ use bevy::render::{
     Render, RenderApp, RenderStartup, RenderSystems,
     render_graph::{self, RenderGraph},
 };
-//
+
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::texture::GpuImage;
 use bevy::shader::PipelineCacheError;
@@ -36,6 +36,7 @@ use std::borrow::Cow;
 // legacy per-pheromone pipelines removed
 use crate::pheromones::{create_phero_array_bind_groups, init_pheromone_array_pipelines};
 use crate::resources::*;
+use crate::{AGENTS_SHADER_PATH, SIZE, WORKGROUP_SIZE, AGENT_WORKGROUP_SIZE, NUM_AGENTS};
 
 pub struct AgentSimComputePlugin;
 
@@ -480,7 +481,7 @@ impl render_graph::Node for AgentSimNode {
                 let layer_count = world
                     .get_resource::<PheromoneConfig>()
                     .map(|c| c.layer_count)
-                    .unwrap_or(NUM_PHEROMONES as u32)
+                    .unwrap_or(3) // Legacy RGB fallback
                     .max(1);
 
                 let run_config = world.resource::<AgentSimRunConfig>(); // toggles for agents/array passes
@@ -522,7 +523,7 @@ impl render_graph::Node for AgentSimNode {
                     // No group(1) needed
                     pass2.set_pipeline(agent_pipeline);
                     let agent_groups =
-                        crate::agents::NUM_AGENTS.div_ceil(crate::agents::AGENT_WORKGROUP_SIZE);
+                        NUM_AGENTS.div_ceil(AGENT_WORKGROUP_SIZE);
                     pass2.dispatch_workgroups(agent_groups, 1, 1);
                 }
 

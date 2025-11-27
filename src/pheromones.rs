@@ -23,16 +23,14 @@ use bevy::render::{
 };
 use std::borrow::Cow;
 
-use crate::resources::SIZE;
+use crate::{SIZE, PHERO_SHADER_PATH};
 
-// Array-based pheromone images (Step 1: allocation only, no behavior change yet)
+// Array-based pheromone images
 #[derive(Resource, Clone, ExtractResource)]
 pub(crate) struct PheromoneArrayImages {
     pub prev: Handle<Image>,
     pub next: Handle<Image>,
 }
-
-// Removed legacy per-pheromone image allocation
 
 /// Allocate array-based pheromone textures (prev/next), one layer per pheromone.
 pub fn make_pheromone_array_images(images: &mut Assets<Image>, layers: u32) -> PheromoneArrayImages {
@@ -62,8 +60,6 @@ pub fn create_pheromone_array_image(layers: u32) -> Image {
 // The returned tuple contains the env bind group layout (prev/next array + uniforms),
 // cached pipeline IDs for the diffuse and input passes, and the composite layout/pipeline
 // used to convert the array back into an RGBA display texture.
-
-// Removed legacy per-channel pipeline initialization
 
 /// Initialize array-based pheromone pipelines and layouts (prev/next array processing).
 /// Returns (env_layout, diffuse_array_pipeline, input_array_pipeline, composite_array_layout, composite_array_pipeline)
@@ -140,7 +136,7 @@ pub fn init_pheromone_array_pipelines(
         ],
     );
 
-    let shader = asset_server.load(crate::resources::PHERO_SHADER_PATH);
+    let shader = asset_server.load(PHERO_SHADER_PATH);
     let diffuse_array_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
         layout: vec![env_bind_group_layout.clone()],
         shader: shader.clone(),
@@ -298,19 +294,20 @@ mod tests {
     #[test]
     fn make_pheromone_array_images_layers_and_size() {
         let mut images: Assets<Image> = Assets::default();
-        let phero_imgs = make_pheromone_array_images(&mut images, crate::resources::NUM_PHEROMONES as u32);
+        let test_layers = 3u32; // Test with legacy RGB layer count
+        let phero_imgs = make_pheromone_array_images(&mut images, test_layers);
 
         let prev = images.get(&phero_imgs.prev).expect("prev image exists");
         let next = images.get(&phero_imgs.next).expect("next image exists");
 
-        // Verify depth/array layers equal NUM_PHEROMONES
+        // Verify depth/array layers equal test_layers
         assert_eq!(
             prev.texture_descriptor.size.depth_or_array_layers,
-            crate::resources::NUM_PHEROMONES as u32
+            test_layers
         );
         assert_eq!(
             next.texture_descriptor.size.depth_or_array_layers,
-            crate::resources::NUM_PHEROMONES as u32
+            test_layers
         );
 
         // basic sanity: texture size and layer count match expectations
@@ -318,25 +315,26 @@ mod tests {
         assert_eq!(prev.texture_descriptor.size.height, SIZE.y);
         assert_eq!(
             prev.texture_descriptor.size.depth_or_array_layers,
-            crate::resources::NUM_PHEROMONES as u32
+            test_layers
         );
         assert_eq!(next.texture_descriptor.size.width, SIZE.x);
         assert_eq!(next.texture_descriptor.size.height, SIZE.y);
         assert_eq!(
             next.texture_descriptor.size.depth_or_array_layers,
-            crate::resources::NUM_PHEROMONES as u32
+            test_layers
         );
     }
 
     #[test]
     fn create_pheromone_array_image_descriptor() {
-        let img = create_pheromone_array_image(crate::resources::NUM_PHEROMONES as u32);
+        let test_layers = 3u32; // Test with legacy RGB layer count
+        let img = create_pheromone_array_image(test_layers);
         // check dimensions and layer count
         assert_eq!(img.texture_descriptor.size.width, SIZE.x);
         assert_eq!(img.texture_descriptor.size.height, SIZE.y);
         assert_eq!(
             img.texture_descriptor.size.depth_or_array_layers,
-            crate::resources::NUM_PHEROMONES as u32
+            test_layers
         );
         // format should be R32Float
         assert_eq!(img.texture_descriptor.format, TextureFormat::R32Float);

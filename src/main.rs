@@ -5,6 +5,23 @@
 use bevy::prelude::*;
 use bevy::window::{Window, WindowMode, WindowPlugin};
 
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+// Display and simulation dimensions
+pub const DISPLAY_FACTOR: u32 = 1;
+pub const SIZE: UVec2 = UVec2::new(1920 / DISPLAY_FACTOR, 1440 / DISPLAY_FACTOR);
+pub const WORKGROUP_SIZE: u32 = 16;
+
+// Agent simulation
+pub const AGENT_WORKGROUP_SIZE: u32 = 256;
+pub const NUM_AGENTS: u32 = 1000000;
+
+// Shader asset paths
+pub const AGENTS_SHADER_PATH: &str = "shaders/agents.wgsl";
+pub const PHERO_SHADER_PATH: &str = "shaders/pheromones.wgsl";
+
 mod agents;
 mod input;
 mod pheromones;
@@ -27,7 +44,6 @@ fn main() {
             brush_target_layer: 1, // default to painting "love"
             universal_love_layers: vec![1],
             universal_hate_layers: vec![0],
-            paint_only_layers: vec![], // universal love/hate are implicitly paint-only
         })
         .add_plugins((
             DefaultPlugins

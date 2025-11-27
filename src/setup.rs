@@ -14,9 +14,10 @@ use bevy::render::renderer::RenderDevice;
 use crate::agents;
 use crate::pheromones::{PheromoneArrayImages, make_pheromone_array_images};
 use crate::resources::{
-    AgentSimRunConfig, DISPLAY_FACTOR, GlobalUniforms, PheromoneConfig, PheromoneImages, SIZE,
+    AgentSimRunConfig, GlobalUniforms, PheromoneConfig, PheromoneImages,
 };
 use crate::resources::{PheromoneLayerParam, PheromoneLayerParamsBuffer};
+use crate::{DISPLAY_FACTOR, SIZE, NUM_AGENTS};
 
 #[derive(Component)]
 pub struct BrushLayerText;
@@ -104,9 +105,9 @@ pub fn setup(
     // 0: hate (red), 1: love (green), 2..4: agent-specific (purple, yellow, blue)
     let mut layer_params: Vec<PheromoneLayerParam> = Vec::with_capacity(layer_count as usize);
     let defaults = [
-        (0.4, 0.7, Vec4::new(0.95, 0.2, 0.2, 1.0)), // 0 hate
+        (0.4, 0.7, Vec4::new(0.0, 0.0, 0.0, 1.0)), // 0 hate
         (0.4, 0.7, Vec4::new(0.2, 0.95, 0.2, 1.0)), // 1 love
-        (0.5, 0.8, Vec4::new(104.0 / 255.0, 80.0 / 255.0, 120.0 / 255.0, 1.0)), // 2 purple
+        (0.5, 0.8, Vec4::new(0.8, 80.0 / 255.0, 120.0 / 255.0, 1.0)), // 2 purple
         (0.6, 0.85, Vec4::new(0.5, 0.9, 0.2, 1.0)), // 3 yellow
         (0.7, 0.9, Vec4::new(0.1, 0.2, 0.85, 1.0)), // 4 blue
     ];
@@ -148,7 +149,7 @@ pub fn setup(
         &mut commands,
         &render_device,
         SIZE,
-        agents::NUM_AGENTS,
+        NUM_AGENTS,
         species_count,
     );
 
@@ -169,7 +170,11 @@ pub fn update_globals_uniform(
     mut globals: ResMut<GlobalUniforms>,
     time: Res<Time>,
 ) {
-    let mut tex = mouse_pos.0 + globals.screen_size / 2.0;
+    // Convert world coordinates (affected by sprite display scale) to texture pixel coords
+    let mut tex = (mouse_pos.0 / (crate::DISPLAY_FACTOR as f32)) + globals.screen_size / 2.0;
+    // Clamp to texture bounds to avoid NaNs in shaders when off-screen
+    tex.x = tex.x.clamp(0.0, globals.screen_size.x - 1.0);
+    tex.y = tex.y.clamp(0.0, globals.screen_size.y - 1.0);
     tex.y = globals.screen_size.y - tex.y;
     globals.mouse_position = tex;
     globals.delta_time = time.delta_secs();

@@ -65,10 +65,20 @@ fn handle_input_phero_array(@builtin(global_invocation_id) id: vec3<u32>) {
     if (x >= dims.x || y >= dims.y) { return; }
     let coord = vec2<i32>(i32(x), i32(y));
 
-    // Seed "avoid" pheromone on screen edges (hate layer = 0)
-    let border: u32 = 4u;
-    if (l == 0 && (x < border || y < border || x >= dims.x - border || y >= dims.y - border)) {
-        textureStore(next_array, coord, l, vec4<f32>(1.0, 0.0, 0.0, 0.0));
+    // Seed "avoid" pheromone on screen edges using a squircle (hate layer = 0)
+    let border: f32 = 4.0;
+    if (l == 0) {
+        // Squircle formula: distance from edge using superellipse with power=4
+        let cx = f32(x) - f32(dims.x) * 0.5;
+        let cy = f32(y) - f32(dims.y) * 0.5;
+        let rx = f32(dims.x) * 0.5 - border;
+        let ry = f32(dims.y) * 0.5 - border;
+        let nx = cx / rx;
+        let ny = cy / ry;
+        let squircle_dist = pow(abs(nx), 4.0) + pow(abs(ny), 4.0);
+        if (squircle_dist >= 1.0) {
+            textureStore(next_array, coord, l, vec4<f32>(1.0, 0.0, 0.0, 0.0));
+        }
     }
 
     // Mouse brush: gate only this section on button state

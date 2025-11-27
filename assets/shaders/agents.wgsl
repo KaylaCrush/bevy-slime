@@ -27,7 +27,6 @@ struct SpeciesSettings {
     _pad2: f32,
 
     color: vec4<f32>,
-    weights: vec4<f32>,
     emit_layer: u32,
     emit_amount: f32,
     _pad_emit: vec2<u32>,
@@ -135,7 +134,8 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     agent.angle = dir;
     let fwd = vec2<f32>(cos(agent.angle), sin(agent.angle));
     agent.position = agent.position + fwd * s.move_speed * dt;
-    agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
+    // Wrap around screen edges instead of bouncing
+    agent.position = wrap_if_needed(agent.position, globals.screen_size);
     let coord = vec2<i32>(i32(agent.position.x), i32(agent.position.y));
     // Deposit only to the species' configured emit layer
     let el = i32(s.emit_layer);
