@@ -23,7 +23,7 @@ use bevy::render::{
 };
 use std::borrow::Cow;
 
-use crate::resources::{NUM_PHEROMONES, SIZE};
+use crate::resources::SIZE;
 
 // Array-based pheromone images (Step 1: allocation only, no behavior change yet)
 #[derive(Resource, Clone, ExtractResource)]
@@ -35,22 +35,20 @@ pub(crate) struct PheromoneArrayImages {
 // Removed legacy per-pheromone image allocation
 
 /// Allocate array-based pheromone textures (prev/next), one layer per pheromone.
-pub fn make_pheromone_array_images(images: &mut Assets<Image>) -> PheromoneArrayImages {
-    let make_array = create_pheromone_array_image;
-    let prev = images.add(make_array());
-    let next = images.add(make_array());
+pub fn make_pheromone_array_images(images: &mut Assets<Image>, layers: u32) -> PheromoneArrayImages {
+    let prev = images.add(create_pheromone_array_image(layers));
+    let next = images.add(create_pheromone_array_image(layers));
     PheromoneArrayImages { prev, next }
 }
 
 /// Create a single pheromone array texture descriptor/image without allocating in Assets.
 /// This is a pure helper so we can unit-test texture allocation independently.
-pub fn create_pheromone_array_image() -> Image {
+pub fn create_pheromone_array_image(layers: u32) -> Image {
     let mut img = Image::new_target_texture(SIZE.x, SIZE.y, TextureFormat::R32Float);
     img.asset_usage = RenderAssetUsages::RENDER_WORLD;
     img.texture_descriptor.usage =
         TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
-    // make it a 2D array with NUM_PHEROMONES layers
-    let layers = NUM_PHEROMONES as u32;
+    // make it a 2D array with the requested number of layers
     img.texture_descriptor.size.depth_or_array_layers = layers;
     // ensure data buffer matches expected size to avoid upload panic
     let bytes_per_pixel: u32 = 4; // R32Float
@@ -80,7 +78,7 @@ pub fn init_pheromone_array_pipelines(
     BindGroupLayout,
     CachedComputePipelineId,
 ) {
-    // Env layout: prev_array (ro), next_array (rw), rgba_temp (rw), globals, species, per-layer params
+    // Env layout: prev_array (ro), next_array (rw), globals, per-layer params, brush control
     let env_bind_group_layout = render_device.create_bind_group_layout(
         Some("PheroArrayEnvBindGroupLayout"),
         &[
@@ -106,20 +104,9 @@ pub fn init_pheromone_array_pipelines(
                 },
                 count: None,
             },
-            // 2: rgba temp
+            // 2: globals
             BindGroupLayoutEntry {
                 binding: 2,
-                visibility: ShaderStages::COMPUTE,
-                ty: BindingType::StorageTexture {
-                    access: StorageTextureAccess::ReadWrite,
-                    format: TextureFormat::Rgba32Float,
-                    view_dimension: TextureViewDimension::D2,
-                },
-                count: None,
-            },
-            // 3: globals
-            BindGroupLayoutEntry {
-                binding: 3,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
@@ -128,9 +115,9 @@ pub fn init_pheromone_array_pipelines(
                 },
                 count: None,
             },
-            // 4: species (ro)
+            // 3: pheromone layer params buffer (array<PheromoneLayerParam>)
             BindGroupLayoutEntry {
-                binding: 4,
+                binding: 3,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Storage { read_only: true },
@@ -139,12 +126,12 @@ pub fn init_pheromone_array_pipelines(
                 },
                 count: None,
             },
-            // 5: pheromone layer params buffer (array<PheromoneLayerParam>)
+            // 4: brush control uniform
             BindGroupLayoutEntry {
-                binding: 5,
+                binding: 4,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
+                    ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -232,8 +219,8 @@ pub fn create_phero_array_bind_groups(
     view_out_a: &TextureView,
     view_out_b: &TextureView,
     global_uniform_buffer: &bevy::render::render_resource::UniformBuffer<&crate::resources::GlobalUniforms>,
-    species_buffer: &bevy::render::render_resource::Buffer,
     layer_params_buffer: &bevy::render::render_resource::Buffer,
+    brush_control_uniform: &bevy::render::render_resource::UniformBuffer<&crate::resources::BrushControlUniform>,
 ) -> Option<([BindGroup; 2], [BindGroup; 2])> {
     let prev_view = &gpu_images.get(&phero_arrays.prev)?.texture_view;
     let next_view = &gpu_images.get(&phero_arrays.next)?.texture_view;
@@ -245,18 +232,13 @@ pub fn create_phero_array_bind_groups(
         &BindGroupEntries::sequential((
             prev_view,
             next_view,
-            view_out_b, // rgba temp unused in env; ok if matching layout; we'll pass the actual output here for consistency
             global_uniform_buffer,
-            BufferBinding {
-                buffer: species_buffer,
-                offset: 0,
-                size: None,
-            },
             BufferBinding {
                 buffer: layer_params_buffer,
                 offset: 0,
                 size: None,
             },
+            brush_control_uniform,
         )),
     );
     let comp_bg0 = render_device.create_bind_group(
@@ -280,18 +262,13 @@ pub fn create_phero_array_bind_groups(
         &BindGroupEntries::sequential((
             next_view,
             prev_view,
-            view_out_a,
             global_uniform_buffer,
-            BufferBinding {
-                buffer: species_buffer,
-                offset: 0,
-                size: None,
-            },
             BufferBinding {
                 buffer: layer_params_buffer,
                 offset: 0,
                 size: None,
             },
+            brush_control_uniform,
         )),
     );
     let comp_bg1 = render_device.create_bind_group(
@@ -321,7 +298,7 @@ mod tests {
     #[test]
     fn make_pheromone_array_images_layers_and_size() {
         let mut images: Assets<Image> = Assets::default();
-        let phero_imgs = make_pheromone_array_images(&mut images);
+        let phero_imgs = make_pheromone_array_images(&mut images, crate::resources::NUM_PHEROMONES as u32);
 
         let prev = images.get(&phero_imgs.prev).expect("prev image exists");
         let next = images.get(&phero_imgs.next).expect("next image exists");
@@ -329,11 +306,11 @@ mod tests {
         // Verify depth/array layers equal NUM_PHEROMONES
         assert_eq!(
             prev.texture_descriptor.size.depth_or_array_layers,
-            NUM_PHEROMONES as u32
+            crate::resources::NUM_PHEROMONES as u32
         );
         assert_eq!(
             next.texture_descriptor.size.depth_or_array_layers,
-            NUM_PHEROMONES as u32
+            crate::resources::NUM_PHEROMONES as u32
         );
 
         // basic sanity: texture size and layer count match expectations
@@ -341,25 +318,25 @@ mod tests {
         assert_eq!(prev.texture_descriptor.size.height, SIZE.y);
         assert_eq!(
             prev.texture_descriptor.size.depth_or_array_layers,
-            NUM_PHEROMONES as u32
+            crate::resources::NUM_PHEROMONES as u32
         );
         assert_eq!(next.texture_descriptor.size.width, SIZE.x);
         assert_eq!(next.texture_descriptor.size.height, SIZE.y);
         assert_eq!(
             next.texture_descriptor.size.depth_or_array_layers,
-            NUM_PHEROMONES as u32
+            crate::resources::NUM_PHEROMONES as u32
         );
     }
 
     #[test]
     fn create_pheromone_array_image_descriptor() {
-        let img = create_pheromone_array_image();
+        let img = create_pheromone_array_image(crate::resources::NUM_PHEROMONES as u32);
         // check dimensions and layer count
         assert_eq!(img.texture_descriptor.size.width, SIZE.x);
         assert_eq!(img.texture_descriptor.size.height, SIZE.y);
         assert_eq!(
             img.texture_descriptor.size.depth_or_array_layers,
-            NUM_PHEROMONES as u32
+            crate::resources::NUM_PHEROMONES as u32
         );
         // format should be R32Float
         assert_eq!(img.texture_descriptor.format, TextureFormat::R32Float);

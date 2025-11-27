@@ -23,7 +23,10 @@ pub struct SpeciesSettings {
     pub _pad2: f32,
     pub color: Vec4,
     pub weights: Vec4,
-    pub emit: Vec4,
+    // New emission model: single target layer with a scalar amount
+    pub emit_layer: u32,
+    pub emit_amount: f32,
+    pub _pad_emit: UVec2,
 }
 impl Default for SpeciesSettings {
     fn default() -> Self {
@@ -38,7 +41,9 @@ impl Default for SpeciesSettings {
             _pad2: 0.0,
             color: Vec4::new(1.0, 1.0, 1.0, 1.0),
             weights: Vec4::ZERO,
-            emit: Vec4::ZERO,
+            emit_layer: 0,
+            emit_amount: 0.0,
+            _pad_emit: UVec2::ZERO,
         }
     }
 }
@@ -47,7 +52,9 @@ impl SpeciesSettings {
         Self {
             color: Vec4::new(1.0, 0.0, 0.0, 1.0),
             weights: Vec4::new(1.0, -1.0, -1.0, 0.0),
-            emit: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            emit_layer: 0,
+            emit_amount: 1.0,
+            _pad_emit: UVec2::ZERO,
             ..Default::default()
         }
     }
@@ -55,7 +62,9 @@ impl SpeciesSettings {
         Self {
             color: Vec4::new(0.0, 1.0, 0.0, 1.0),
             weights: Vec4::new(-1.0, 1.0, -1.0, 0.0),
-            emit: Vec4::new(0.0, 1.0, 0.0, 0.0),
+            emit_layer: 1,
+            emit_amount: 1.0,
+            _pad_emit: UVec2::ZERO,
             ..Default::default()
         }
     }
@@ -63,7 +72,9 @@ impl SpeciesSettings {
         Self {
             color: Vec4::new(0.0, 0.0, 1.0, 1.0),
             weights: Vec4::new(-1.0, -1.0, 1.0, 0.0),
-            emit: Vec4::new(0.0, 0.0, 1.0, 0.0),
+            emit_layer: 2,
+            emit_amount: 1.0,
+            _pad_emit: UVec2::ZERO,
             ..Default::default()
         }
     }
@@ -75,8 +86,35 @@ pub const PHERO_SHADER_PATH: &str = "shaders/pheromones.wgsl";
 
 pub const DISPLAY_FACTOR: u32 = 1;
 pub const SIZE: UVec2 = UVec2::new(1920 / DISPLAY_FACTOR, 1080 / DISPLAY_FACTOR);
-pub const WORKGROUP_SIZE: u32 = 8;
+pub const WORKGROUP_SIZE: u32 = 16;
 pub const NUM_PHEROMONES: usize = 3;
+
+// Runtime-configurable pheromone system options. Defaults preserve current behavior.
+#[derive(Resource, Clone, ExtractResource)]
+pub struct PheromoneConfig {
+    /// Number of pheromone layers (texture array depth). Default 3 to match legacy RGB.
+    pub layer_count: u32,
+    /// Optional brush target layer (default 0). Used by input compute to decide which layer to paint.
+    pub brush_target_layer: u32,
+    /// Layers that are universally attractive (positive weight for all species) and paint-only.
+    pub universal_love_layers: Vec<u32>,
+    /// Layers that are universally repulsive (negative weight for all species) and paint-only.
+    pub universal_hate_layers: Vec<u32>,
+    /// Additional paint-only layers (agents do not deposit). Love/hate layers are implicitly paint-only.
+    pub paint_only_layers: Vec<u32>,
+}
+
+impl Default for PheromoneConfig {
+    fn default() -> Self {
+        Self {
+            layer_count: NUM_PHEROMONES as u32,
+            brush_target_layer: 0,
+            universal_love_layers: Vec::new(),
+            universal_hate_layers: Vec::new(),
+            paint_only_layers: Vec::new(),
+        }
+    }
+}
 
 #[derive(
     Resource,
@@ -94,16 +132,7 @@ pub struct GlobalUniforms {
     pub right_button_pressed: u32,
 }
 
-#[derive(
-    Resource,
-    Clone,
-    bevy::render::extract_resource::ExtractResource,
-    bevy::render::render_resource::ShaderType,
-)]
-pub struct PheromoneUniforms {
-    pub diffusion: Vec4,
-    pub decay: Vec4,
-}
+// Removed legacy PheromoneUniforms (RGBA-era). Diffusion/decay now live in per-layer params.
 
 // Per-layer pheromone parameters (used by array-based shaders)
 #[repr(C)]
@@ -116,6 +145,23 @@ pub struct PheromoneLayerParam {
     pub color: Vec4,
 }
 
+// Uniform used by agents to control extended pheromone path (layer count and enable flag)
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, bevy::render::render_resource::ShaderType)]
+pub struct PheroControlUniform {
+    pub layer_count: u32,
+    pub _pad: bevy::math::UVec3,
+}
+
+// Uniform passed to the input/brush compute shader
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, bevy::render::render_resource::ShaderType)]
+pub struct BrushControlUniform {
+    pub target_layer: u32,
+    pub _mode: u32, // reserved
+    pub _pad: bevy::math::UVec2,
+}
+
 #[derive(Resource, Clone, ExtractResource)]
 pub struct PheromoneLayerParamsBuffer {
     #[allow(dead_code)]
@@ -126,7 +172,6 @@ pub struct PheromoneLayerParamsBuffer {
 pub struct PheromoneImages {
     pub texture_a: Handle<Image>,
     pub texture_b: Handle<Image>,
-    pub temp_texture: Handle<Image>,
 }
 
 #[derive(Resource, Clone, ExtractResource)]
@@ -145,6 +190,14 @@ pub struct PheroArrayEnvBindGroups(pub [bevy::render::render_resource::BindGroup
 
 #[derive(Resource)]
 pub struct PheroArrayCompositeBindGroups(pub [bevy::render::render_resource::BindGroup; 2]);
+
+// Extended per-species, per-layer weights/emission buffers (dense L floats per species)
+#[derive(Resource, Clone, ExtractResource)]
+pub struct SpeciesLayerWeights {
+    pub weights: bevy::render::render_resource::Buffer,
+    pub layer_count: u32,
+    pub species_count: u32,
+}
 
 #[derive(Resource, Clone, ExtractResource)]
 pub struct AgentSimRunConfig {
@@ -175,8 +228,9 @@ mod tests {
         assert_eq!(s.sensor_offset_dst, 35.0);
         assert_eq!(s.sensor_size, 1.0);
         assert_eq!(s.color.w, 1.0);
-        // weights and emit default to zero vectors
+        // weights default to zero and emission defaults disabled
         assert_eq!(s.weights, Vec4::ZERO);
-        assert_eq!(s.emit, Vec4::ZERO);
+        assert_eq!(s.emit_layer, 0);
+        assert_eq!(s.emit_amount, 0.0);
     }
 }

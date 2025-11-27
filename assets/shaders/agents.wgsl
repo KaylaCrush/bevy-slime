@@ -1,13 +1,13 @@
-// Agent + RGBA environment compute shader
+// Agent compute shader using layer-based pheromone array
 
 @group(0) @binding(0) var<storage, read_write> agents: array<Agent>;
-@group(0) @binding(1) var input_tex: texture_storage_2d<rgba32float, read>;
-@group(0) @binding(2) var output_tex: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(3) var temp_tex: texture_storage_2d<rgba32float, read_write>;
 @group(0) @binding(4) var<uniform> globals: GlobalUniforms;
 @group(0) @binding(5) var<storage, read> species: array<SpeciesSettings>;
 // Array-based pheromone field: one layer per pheromone (read/write for sensing and deposit)
 @group(0) @binding(6) var phero_array: texture_storage_2d_array<r32float, read_write>;
+// Extended pheromone controls and per-species profiles (dense). Not used yet; bound with dummies.
+@group(0) @binding(7) var<storage, read> species_weights: array<f32>;
+@group(0) @binding(9) var<uniform> phero_ctrl: PheroControl;
 
 struct Agent {
     position: vec2<f32>,
@@ -28,7 +28,9 @@ struct SpeciesSettings {
 
     color: vec4<f32>,
     weights: vec4<f32>,
-    emit: vec4<f32>,
+    emit_layer: u32,
+    emit_amount: f32,
+    _pad_emit: vec2<u32>,
 };
 
 
@@ -39,6 +41,11 @@ struct GlobalUniforms {
     screen_size: vec2<f32>,
     left_button_pressed: u32,
     right_button_pressed: u32,
+};
+
+struct PheroControl {
+    layer_count: u32,
+    _pad: vec3<u32>,
 };
 
 
@@ -57,7 +64,21 @@ fn hash_f32(value: u32) -> f32 {
     return f32(hash_u32(value)) / 4294967295.0;
 }
 
-@compute @workgroup_size(64)
+fn weight_base(species_index: u32, layer_count: u32) -> u32 {
+    return species_index * layer_count;
+}
+
+fn sample_signal_ext_with_base(pos: vec2<i32>, base: u32, lc: u32) -> f32 {
+    var sum = 0.0;
+    for (var li: u32 = 0u; li < lc; li = li + 1u) {
+        let v = textureLoad(phero_array, pos, i32(li)).x;
+        let w = species_weights[base + li];
+        sum = sum + v * w;
+    }
+    return sum;
+}
+
+@compute @workgroup_size(256)
 fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = id.x;
     if (index >= arrayLength(&agents)) { return; }
@@ -69,9 +90,39 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     let seed = px ^ hash_u32(py) ^ globals.frame;
     let random_val = hash_f32(seed);
     let sensor_angle = radians(s.sensor_angle_degrees);
-    let w_forward = sense(agent.position, agent.angle, s, globals);
-    let w_left    = sense(agent.position, agent.angle + sensor_angle, s, globals);
-    let w_right   = sense(agent.position, agent.angle - sensor_angle, s, globals);
+    // Always use layer-based sensing
+    let fwdv = vec2<f32>(cos(agent.angle), sin(agent.angle));
+    let leftv = vec2<f32>(cos(agent.angle + sensor_angle), sin(agent.angle + sensor_angle));
+    let rightv = vec2<f32>(cos(agent.angle - sensor_angle), sin(agent.angle - sensor_angle));
+    let p_f = agent.position + fwdv * s.sensor_offset_dst;
+    let p_l = agent.position + leftv * s.sensor_offset_dst;
+    let p_r = agent.position + rightv * s.sensor_offset_dst;
+    let cx_f = clamp(i32(p_f.x), 0, i32(globals.screen_size.x) - 1);
+    let cy_f = clamp(i32(p_f.y), 0, i32(globals.screen_size.y) - 1);
+    let cx_l = clamp(i32(p_l.x), 0, i32(globals.screen_size.x) - 1);
+    let cy_l = clamp(i32(p_l.y), 0, i32(globals.screen_size.y) - 1);
+    let cx_r = clamp(i32(p_r.x), 0, i32(globals.screen_size.x) - 1);
+    let cy_r = clamp(i32(p_r.y), 0, i32(globals.screen_size.y) - 1);
+    // Use a square sensor mask
+    let r = i32(s.sensor_size);
+    var w_forward = 0.0;
+    var w_left = 0.0;
+    var w_right = 0.0;
+    let lc = phero_ctrl.layer_count;
+    let base = weight_base(agent.species_index, lc);
+    if (r == 0) {
+        w_forward = sample_signal_ext_with_base(vec2<i32>(cx_f, cy_f), base, lc);
+        w_left    = sample_signal_ext_with_base(vec2<i32>(cx_l, cy_l), base, lc);
+        w_right   = sample_signal_ext_with_base(vec2<i32>(cx_r, cy_r), base, lc);
+    } else {
+        for (var ox = -r; ox <= r; ox++) {
+            for (var oy = -r; oy <= r; oy++) {
+                w_forward += sample_signal_ext_with_base(vec2<i32>(cx_f + ox, cy_f + oy), base, lc);
+                w_left    += sample_signal_ext_with_base(vec2<i32>(cx_l + ox, cy_l + oy), base, lc);
+                w_right   += sample_signal_ext_with_base(vec2<i32>(cx_r + ox, cy_r + oy), base, lc);
+            }
+        }
+    }
     var dir = agent.angle;
     if (w_forward > w_left && w_forward > w_right) {
     } else if (w_forward < w_left && w_forward < w_right) {
@@ -86,44 +137,17 @@ fn update_agents(@builtin(global_invocation_id) id: vec3<u32>) {
     agent.position = agent.position + fwd * s.move_speed * dt;
     agent.angle = bounce_if_needed(agent.position, agent.angle, globals.screen_size);
     let coord = vec2<i32>(i32(agent.position.x), i32(agent.position.y));
-    // Deposit pheromone intensity per layer (color comes from pheromone layer params in composite)
-    let e = s.emit.xyz; // per-layer emission strengths
-    let cur_r = textureLoad(phero_array, coord, 0).x;
-    let cur_g = textureLoad(phero_array, coord, 1).x;
-    let cur_b = textureLoad(phero_array, coord, 2).x;
-    // Scale by dt for frame-rate independent deposition
-    textureStore(phero_array, coord, 0, vec4<f32>(cur_r + e.x * globals.delta_time, 0.0, 0.0, 0.0));
-    textureStore(phero_array, coord, 1, vec4<f32>(cur_g + e.y * globals.delta_time, 0.0, 0.0, 0.0));
-    textureStore(phero_array, coord, 2, vec4<f32>(cur_b + e.z * globals.delta_time, 0.0, 0.0, 0.0));
+    // Deposit only to the species' configured emit layer
+    let el = i32(s.emit_layer);
+    if (el >= 0) {
+        let cur = textureLoad(phero_array, coord, el).x;
+        let add = s.emit_amount * globals.delta_time;
+        textureStore(phero_array, coord, el, vec4<f32>(cur + add, 0.0, 0.0, 0.0));
+    }
     agents[index] = agent;
 }
 
-// helpers (sense, sample_signal, bounce, etc.)
-fn sample_signal(pos: vec2<i32>, weights: vec3<f32>) -> f32 {
-    // Read from array layers 0..2 and combine by weights
-    let r = textureLoad(phero_array, pos, 0).x;
-    let g = textureLoad(phero_array, pos, 1).x;
-    let b = textureLoad(phero_array, pos, 2).x;
-    return r * weights.x + g * weights.y + b * weights.z;
-}
-
-fn sense(position: vec2<f32>, angle: f32, s: SpeciesSettings, globals: GlobalUniforms) -> f32 {
-    let dir = vec2<f32>(cos(angle), sin(angle));
-    let sensor_pos = position + dir * s.sensor_offset_dst;
-    let cx = i32(sensor_pos.x);
-    let cy = i32(sensor_pos.y);
-    let r = i32(s.sensor_size);
-    var sum = 0.0;
-    for (var ox = -r; ox <= r; ox++) {
-        for (var oy = -r; oy <= r; oy++) {
-            let sx = clamp(cx + ox, 0, i32(globals.screen_size.x) - 1);
-            let sy = clamp(cy + oy, 0, i32(globals.screen_size.y) - 1);
-            let signal = sample_signal(vec2<i32>(sx, sy), s.weights.xyz);
-            sum += signal;
-        }
-    }
-    return sum;
-}
+// helpers (movement utils)
 
 fn bounce_if_needed(position: vec2<f32>, direction: f32, size: vec2<f32>) -> f32 {
     var dir = direction;

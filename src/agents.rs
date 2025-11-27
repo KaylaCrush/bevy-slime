@@ -14,8 +14,8 @@ use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bytemuck::{Pod, Zeroable};
 use rand::Rng;
 
-pub const AGENT_WORKGROUP_SIZE: u32 = 64;
-pub const NUM_AGENTS: u32 = 1000000;
+pub const AGENT_WORKGROUP_SIZE: u32 = 256;
+pub const NUM_AGENTS: u32 = 500000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, ShaderType)]

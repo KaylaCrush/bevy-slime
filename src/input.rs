@@ -5,6 +5,8 @@
 // - `MouseButtonState` tracks left/right button pressed state for the brush.
 
 use bevy::{input::keyboard, prelude::*};
+use crate::resources::PheromoneConfig;
+use bevy::input::mouse::MouseWheel;
 
 pub struct InputPlugin;
 impl Plugin for InputPlugin {
@@ -15,6 +17,8 @@ impl Plugin for InputPlugin {
                 update_mouse_position,
                 handle_button_input,
                 handle_keyboard_input,
+                handle_mouse_wheel_layer,
+                handle_brush_hotkeys,
             ),
         )
         .insert_resource(MouseWorldPos(Vec2::ZERO))
@@ -72,5 +76,60 @@ fn handle_keyboard_input(keyboard_input: Res<ButtonInput<keyboard::KeyCode>>) {
     if keyboard_input.just_pressed(keyboard::KeyCode::Escape) {
         println!("Escape key pressed. Exiting...");
         std::process::exit(0);
+    }
+}
+
+// Mouse wheel cycles brush target layer (with wrap)
+fn handle_mouse_wheel_layer(
+    mut wheel: MessageReader<MouseWheel>,
+    mut cfg: ResMut<PheromoneConfig>,
+) {
+    let mut delta: i32 = 0;
+    for ev in wheel.read() {
+        // Positive y scrolls up; negative scrolls down
+        if ev.y > 0.0 {
+            delta += 1;
+        } else if ev.y < 0.0 {
+            delta -= 1;
+        }
+    }
+    if delta != 0 {
+        let layers = cfg.layer_count.max(1) as i32;
+        let cur = cfg.brush_target_layer as i32;
+        let mut next = (cur + delta) % layers;
+        if next < 0 { next += layers; }
+        cfg.brush_target_layer = next as u32;
+    }
+}
+
+// Number keys 0-9 set brush target layer directly (clamped to available layers)
+fn handle_brush_hotkeys(
+    keyboard_input: Res<ButtonInput<keyboard::KeyCode>>,
+    mut cfg: ResMut<PheromoneConfig>,
+) {
+    // Map numeric keys to indices
+    let keys = [
+        keyboard::KeyCode::Digit0,
+        keyboard::KeyCode::Digit1,
+        keyboard::KeyCode::Digit2,
+        keyboard::KeyCode::Digit3,
+        keyboard::KeyCode::Digit4,
+        keyboard::KeyCode::Digit5,
+        keyboard::KeyCode::Digit6,
+        keyboard::KeyCode::Digit7,
+        keyboard::KeyCode::Digit8,
+        keyboard::KeyCode::Digit9,
+    ];
+    let mut set: Option<u32> = None;
+    for (idx, key) in keys.iter().enumerate() {
+        if keyboard_input.just_pressed(*key) {
+            set = Some(idx as u32);
+            break;
+        }
+    }
+    if let Some(mut v) = set {
+        let max_layer = cfg.layer_count.saturating_sub(1);
+        if v > max_layer { v = max_layer; }
+        cfg.brush_target_layer = v;
     }
 }

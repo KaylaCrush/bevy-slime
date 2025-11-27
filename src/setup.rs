@@ -7,24 +7,40 @@
 // features.
 
 use bevy::prelude::*;
+// Using Text2D-style overlay for the layer indicator
 use bevy::render::render_resource::{BufferInitDescriptor, BufferUsages};
 use bevy::render::renderer::RenderDevice;
 
 use crate::agents;
 use crate::pheromones::{PheromoneArrayImages, make_pheromone_array_images};
 use crate::resources::{
-    AgentSimRunConfig, DISPLAY_FACTOR, GlobalUniforms, PheromoneImages, PheromoneUniforms, SIZE,
+    AgentSimRunConfig, DISPLAY_FACTOR, GlobalUniforms, PheromoneConfig, PheromoneImages, SIZE,
 };
 use crate::resources::{PheromoneLayerParam, PheromoneLayerParamsBuffer};
+
+#[derive(Component)]
+pub struct BrushLayerText;
+
+#[derive(Resource, Clone, Copy)]
+pub struct FpsCounter {
+    pub acc_time: f32,
+    pub frames: u32,
+    pub fps: f32,
+}
+
+#[derive(Resource, Clone)]
+pub struct PheromoneLayerParamsCpu {
+    pub params: Vec<PheromoneLayerParam>, // diffusion/decay as base rates; color as display
+}
 
 pub fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     render_device: Res<RenderDevice>,
+    phero_cfg: Res<PheromoneConfig>,
 ) {
     // Create two RGBA render targets (texture_a/texture_b) used for display
-    // ping-ponging. A third `temp_texture` is used as a working target where
-    // necessary.
+    // ping-ponging. No separate temp texture is required for the current pipeline.
     // TEXTURES
     let mut image = Image::new_target_texture(
         SIZE.x,
@@ -37,7 +53,7 @@ pub fn setup(
         | bevy::render::render_resource::TextureUsages::TEXTURE_BINDING;
     let image0 = images.add(image.clone());
     let image1 = images.add(image.clone());
-    let image2 = images.add(image.clone());
+    // No temp texture required
 
     commands.spawn((
         Sprite {
@@ -49,14 +65,26 @@ pub fn setup(
     ));
     commands.spawn(Camera2d);
 
-    commands.insert_resource(PheromoneImages {
-        texture_a: image0,
-        texture_b: image1,
-        temp_texture: image2,
-    });
+    // Minimal on-screen text: show current brush target layer and FPS (top-left-ish)
+    commands.insert_resource(FpsCounter { acc_time: 0.0, frames: 0, fps: 0.0 });
+    commands.spawn((
+        Text::new(format!("Layer: {} | FPS: --", phero_cfg.brush_target_layer)),
+        TextFont { font_size: 18.0, ..default() },
+        TextColor(Color::WHITE),
+        Transform::from_translation(Vec3::new(
+            - (SIZE.x as f32) * 0.5 + 16.0,
+            (SIZE.y as f32) * 0.5 - 24.0,
+            10.0,
+        )),
+        BrushLayerText,
+    ));
 
-    // ARRAY PHEROMONE IMAGES (prev/next) - allocated for upcoming refactor
-    let phero_array = make_pheromone_array_images(&mut images);
+    commands.insert_resource(PheromoneImages { texture_a: image0, texture_b: image1 });
+
+    // ARRAY PHEROMONE IMAGES (prev/next)
+    let layer_count = phero_cfg.layer_count.max(1);
+    info!("Pheromones: layers = {layer_count}");
+    let phero_array = make_pheromone_array_images(&mut images, layer_count);
     commands.insert_resource::<PheromoneArrayImages>(phero_array);
 
     // GLOBAL UNIFORMS
@@ -69,35 +97,33 @@ pub fn setup(
         right_button_pressed: 0,
     });
 
-    commands.insert_resource(PheromoneUniforms {
-        diffusion: Vec4::new(0.5, 0.3, 0.7, 0.0),
-        decay: Vec4::new(0.8, 0.6, 0.9, 0.0),
-    });
+    // Legacy PheromoneUniforms removed; using per-layer param buffer below
 
     // Per-layer params (diffusion, decay, color)
-    let layer_params: Vec<PheromoneLayerParam> = vec![
-        PheromoneLayerParam {
-            diffusion: 0.5,
-            decay: 0.8,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            color: Vec4::new(104.0 / 255.0, 80.0 / 255.0, 120.0 / 255.0, 1.0),
-        },
-        PheromoneLayerParam {
-            diffusion: 0.3,
-            decay: 0.6,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            color: Vec4::new(0.7, 0.9, 0.1, 1.0),
-        },
-        PheromoneLayerParam {
-            diffusion: 0.7,
-            decay: 0.9,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            color: Vec4::new(0.1, 0.2, 0.8, 1.0),
-        },
+    // Define explicit colors for the first five layers:
+    // 0: hate (red), 1: love (green), 2..4: agent-specific (purple, yellow, blue)
+    let mut layer_params: Vec<PheromoneLayerParam> = Vec::with_capacity(layer_count as usize);
+    let defaults = [
+        (0.4, 0.7, Vec4::new(0.95, 0.2, 0.2, 1.0)), // 0 hate
+        (0.4, 0.7, Vec4::new(0.2, 0.95, 0.2, 1.0)), // 1 love
+        (0.5, 0.8, Vec4::new(104.0 / 255.0, 80.0 / 255.0, 120.0 / 255.0, 1.0)), // 2 purple
+        (0.6, 0.85, Vec4::new(0.5, 0.9, 0.2, 1.0)), // 3 yellow
+        (0.7, 0.9, Vec4::new(0.1, 0.2, 0.85, 1.0)), // 4 blue
     ];
+    for i in 0..layer_count {
+        let (diff, dec, col) = if (i as usize) < defaults.len() {
+            defaults[i as usize]
+        } else {
+            (0.5, 0.8, Vec4::new(0.6, 0.6, 0.6, 1.0))
+        };
+        layer_params.push(PheromoneLayerParam {
+            diffusion: diff,
+            decay: dec,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            color: col,
+        });
+    }
     let layer_param_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("Pheromone layer params"),
         contents: bytemuck::cast_slice(&layer_params),
@@ -106,6 +132,8 @@ pub fn setup(
     commands.insert_resource(PheromoneLayerParamsBuffer {
         buffer: layer_param_buffer,
     });
+    // Keep CPU copy of base rates/colors
+    commands.insert_resource(PheromoneLayerParamsCpu { params: layer_params });
 
     // Run config
     commands.insert_resource(AgentSimRunConfig {
@@ -156,4 +184,64 @@ pub fn update_globals_uniform(
     } else {
         0
     };
+}
+
+// Keep the on-screen label in sync with the current brush layer
+pub fn update_brush_layer_text(
+    cfg: Res<crate::resources::PheromoneConfig>,
+    fps: Res<FpsCounter>,
+    mut q: Query<&mut Text, With<BrushLayerText>>,
+) {
+    if !cfg.is_changed() { return; }
+    for mut t in &mut q {
+        let fps_disp = if fps.fps > 0.0 { format!("{:.0}", fps.fps) } else { "--".to_string() };
+        *t = Text::new(format!("Layer: {} | FPS: {}", cfg.brush_target_layer, fps_disp));
+    }
+}
+
+// Update FPS every ~0.25s and refresh the label text
+pub fn update_fps_counter(
+    time: Res<Time>,
+    cfg: Res<crate::resources::PheromoneConfig>,
+    mut counter: ResMut<FpsCounter>,
+    mut q: Query<&mut Text, With<BrushLayerText>>,
+) {
+    counter.acc_time += time.delta_secs();
+    counter.frames += 1;
+    if counter.acc_time >= 0.25 {
+        counter.fps = (counter.frames as f32) / counter.acc_time.max(1e-6);
+        counter.acc_time = 0.0;
+        counter.frames = 0;
+        let fps_disp = format!("{:.0}", counter.fps);
+        for mut t in &mut q {
+            *t = Text::new(format!("Layer: {} | FPS: {}", cfg.brush_target_layer, fps_disp));
+        }
+    }
+}
+
+// Precompute per-frame diffusion/decay factors on CPU and upload to GPU buffer
+pub fn update_layer_params_buffer(
+    time: Res<Time>,
+    cpu: Res<PheromoneLayerParamsCpu>,
+    params_buf: Res<PheromoneLayerParamsBuffer>,
+    queue: Res<bevy::render::renderer::RenderQueue>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 { return; }
+    // Helper: per-frame factor = 1 - (1 - rate)^dt
+    fn per_frame_factor(rate: f32, dt: f32) -> f32 {
+        let base = 1.0 - rate;
+        1.0 - base.powf(dt)
+    }
+    let mut upload: Vec<PheromoneLayerParam> = Vec::with_capacity(cpu.params.len());
+    for p in cpu.params.iter() {
+        upload.push(PheromoneLayerParam {
+            diffusion: per_frame_factor(p.diffusion, dt),
+            decay: per_frame_factor(p.decay, dt),
+            _pad0: 0.0,
+            _pad1: 0.0,
+            color: p.color,
+        });
+    }
+    queue.write_buffer(&params_buf.buffer, 0, bytemuck::cast_slice(&upload));
 }

@@ -15,10 +15,20 @@ mod species;
 
 use input::InputPlugin;
 use render::AgentSimComputePlugin;
+use resources::PheromoneConfig;
 
 fn main() {
     App::new()
         .insert_resource(ClearColor(Color::BLACK))
+        // Insert runtime pheromone config with safe defaults (RGB, legacy behavior)
+        // Configure 5 pheromone layers by default with universal hate/love paint-only channels
+        .insert_resource(PheromoneConfig {
+            layer_count: 5,
+            brush_target_layer: 1, // default to painting "love"
+            universal_love_layers: vec![1],
+            universal_hate_layers: vec![0],
+            paint_only_layers: vec![], // universal love/hate are implicitly paint-only
+        })
         .add_plugins((
             DefaultPlugins
                 .set(WindowPlugin {
@@ -55,6 +65,9 @@ fn main() {
                 setup::switch_textures,
                 agents::sync_agents_to_gpu,
                 setup::update_globals_uniform,
+                setup::update_brush_layer_text,
+                setup::update_fps_counter,
+                setup::update_layer_params_buffer,
             ),
         )
         .run();

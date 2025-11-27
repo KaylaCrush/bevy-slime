@@ -48,9 +48,10 @@ impl Plugin for AgentSimComputePlugin {
             ExtractResourcePlugin::<crate::agents::AgentGpuBuffer>::default(),
             ExtractResourcePlugin::<PheromoneImages>::default(),
             ExtractResourcePlugin::<SpeciesGpuBuffer>::default(),
+            ExtractResourcePlugin::<SpeciesLayerWeights>::default(),
             ExtractResourcePlugin::<GlobalUniforms>::default(),
+            ExtractResourcePlugin::<PheromoneConfig>::default(),
             ExtractResourcePlugin::<AgentSimRunConfig>::default(),
-            ExtractResourcePlugin::<PheromoneUniforms>::default(),
             ExtractResourcePlugin::<crate::pheromones::PheromoneArrayImages>::default(),
             ExtractResourcePlugin::<crate::resources::PheromoneLayerParamsBuffer>::default(),
         ));
@@ -102,94 +103,79 @@ fn init_agent_sim_pipeline(
     // NOTE: binding indices here are mirrored by the agent shader and by code
     // that constructs BindGroupEntries in `prepare_bind_group`. Keep the layout
     // stable when editing shaders.
-    // Build bind group layout for group(0)
-    let mut entries: Vec<BindGroupLayoutEntry> = Vec::new();
-    let mut binding_index = 0u32;
-    // 0: agents storage buffer
-    entries.push(BindGroupLayoutEntry {
-        binding: binding_index,
-        visibility: ShaderStages::COMPUTE,
-        ty: BindingType::Buffer {
-            ty: BufferBindingType::Storage { read_only: false },
-            has_dynamic_offset: false,
-            min_binding_size: None,
+    // Build bind group layout for group(0) with only the bindings used by agents.wgsl
+    let entries: Vec<BindGroupLayoutEntry> = vec![
+        // 0: agents storage buffer
+        BindGroupLayoutEntry {
+            binding: 0,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    binding_index += 1;
-    // 1: input rgba
-    entries.push(BindGroupLayoutEntry {
-        binding: binding_index,
-        visibility: ShaderStages::COMPUTE,
-        ty: BindingType::StorageTexture {
-            access: StorageTextureAccess::ReadOnly,
-            format: TextureFormat::Rgba32Float,
-            view_dimension: TextureViewDimension::D2,
+        // 4: globals uniform
+        BindGroupLayoutEntry {
+            binding: 4,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    binding_index += 1;
-    // 2: output rgba
-    entries.push(BindGroupLayoutEntry {
-        binding: binding_index,
-        visibility: ShaderStages::COMPUTE,
-        ty: BindingType::StorageTexture {
-            access: StorageTextureAccess::WriteOnly,
-            format: TextureFormat::Rgba32Float,
-            view_dimension: TextureViewDimension::D2,
+        // 5: species storage (read-only)
+        BindGroupLayoutEntry {
+            binding: 5,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    binding_index += 1;
-    // 3: temp rgba
-    entries.push(BindGroupLayoutEntry {
-        binding: binding_index,
-        visibility: ShaderStages::COMPUTE,
-        ty: BindingType::StorageTexture {
-            access: StorageTextureAccess::ReadWrite,
-            format: TextureFormat::Rgba32Float,
-            view_dimension: TextureViewDimension::D2,
+        // 6: pheromone texture2D array (read_write) for agents (sensing + deposit)
+        BindGroupLayoutEntry {
+            binding: 6,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::StorageTexture {
+                access: StorageTextureAccess::ReadWrite,
+                format: TextureFormat::R32Float,
+                view_dimension: TextureViewDimension::D2Array,
+            },
+            count: None,
         },
-        count: None,
-    });
-    binding_index += 1;
-    // 4: globals uniform
-    entries.push(BindGroupLayoutEntry {
-        binding: binding_index,
-        visibility: ShaderStages::COMPUTE,
-        ty: BindingType::Buffer {
-            ty: BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // 7: extended species weights (dense f32 array), read-only
+        BindGroupLayoutEntry {
+            binding: 7,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    binding_index += 1;
-    // 5: species storage (read-only)
-    entries.push(BindGroupLayoutEntry {
-        binding: binding_index,
-        visibility: ShaderStages::COMPUTE,
-        ty: BindingType::Buffer {
-            ty: BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
+        // 9: PheroControl uniform (layer_count only)
+        BindGroupLayoutEntry {
+            binding: 9,
+            visibility: ShaderStages::COMPUTE,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
         },
-        count: None,
-    });
-    binding_index += 1;
-    // 6: pheromone texture2D array (read_write) for agents (sensing + deposit)
-    entries.push(BindGroupLayoutEntry {
-        binding: binding_index,
-        visibility: ShaderStages::COMPUTE,
-        ty: BindingType::StorageTexture {
-            access: StorageTextureAccess::ReadWrite,
-            format: TextureFormat::R32Float,
-            view_dimension: TextureViewDimension::D2Array,
-        },
-        count: None,
-    });
-    let texture_bind_group_layout =
-        render_device.create_bind_group_layout(Some("SlimeSimBindGroupLayout"), &entries);
+    ];
+    let texture_bind_group_layout = render_device.create_bind_group_layout(
+        Some("AgentSimBindGroupLayout"),
+        &entries,
+    );
 
     // No separate bind group layout needed for agents' pheromones when using fixed bindings
 
@@ -238,7 +224,9 @@ fn prepare_bind_group(
     let pheromone_images = world.resource::<PheromoneImages>();
     let phero_arrays = world.resource::<crate::pheromones::PheromoneArrayImages>();
     let species_settings = world.resource::<SpeciesGpuBuffer>();
+    let species_weights_res = world.get_resource::<SpeciesLayerWeights>();
     let globals = world.resource::<GlobalUniforms>();
+    let phero_cfg = world.resource::<PheromoneConfig>();
     let layer_params = world.resource::<crate::resources::PheromoneLayerParamsBuffer>();
 
     // Resolve GPU image handles
@@ -248,13 +236,10 @@ fn prepare_bind_group(
     let Some(image_b) = gpu_images.get(&pheromone_images.texture_b) else {
         return;
     };
-    let Some(image_temp) = gpu_images.get(&pheromone_images.temp_texture) else {
-        return;
-    };
 
     let view_a = &image_a.texture_view;
     let view_b = &image_b.texture_view;
-    let view_temp = &image_temp.texture_view;
+    // No temp texture used
 
     // Build uniform buffers from cloned resources and write them to the GPU
     let mut global_uniform_buffer = UniformBuffer::from(globals);
@@ -271,6 +256,16 @@ fn prepare_bind_group(
         return;
     };
 
+    // Extended pheromone dummy buffers and control uniform (use_extended=0 by default)
+    let Some(species_layer_weights) = species_weights_res else { return; };
+
+    let layer_count = phero_cfg.layer_count.max(1);
+    let weights_buf_ref = &species_layer_weights.weights;
+
+    let phero_ctrl_uniform = crate::resources::PheroControlUniform { layer_count, _pad: UVec3::ZERO };
+    let mut phero_ctrl_buffer = UniformBuffer::from(&phero_ctrl_uniform);
+    phero_ctrl_buffer.write_buffer(&render_device, &queue);
+
     // Build bind group entries for group(0)
     let entries0 = vec![
         BindGroupEntry {
@@ -280,18 +275,6 @@ fn prepare_bind_group(
                 offset: 0,
                 size: None,
             }),
-        },
-        BindGroupEntry {
-            binding: 1,
-            resource: BindingResource::TextureView(view_a),
-        },
-        BindGroupEntry {
-            binding: 2,
-            resource: BindingResource::TextureView(view_b),
-        },
-        BindGroupEntry {
-            binding: 3,
-            resource: BindingResource::TextureView(view_temp),
         },
         BindGroupEntry {
             binding: 4,
@@ -310,6 +293,15 @@ fn prepare_bind_group(
             binding: 6,
             resource: BindingResource::TextureView(phero_next_view),
         },
+        BindGroupEntry {
+            binding: 7,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: weights_buf_ref,
+                offset: 0,
+                size: None,
+            }),
+        },
+        BindGroupEntry { binding: 9, resource: phero_ctrl_buffer.binding().unwrap() },
     ];
 
     let bind_group_0 =
@@ -323,18 +315,6 @@ fn prepare_bind_group(
                 offset: 0,
                 size: None,
             }),
-        },
-        BindGroupEntry {
-            binding: 1,
-            resource: BindingResource::TextureView(view_b),
-        },
-        BindGroupEntry {
-            binding: 2,
-            resource: BindingResource::TextureView(view_a),
-        },
-        BindGroupEntry {
-            binding: 3,
-            resource: BindingResource::TextureView(view_temp),
         },
         BindGroupEntry {
             binding: 4,
@@ -353,12 +333,30 @@ fn prepare_bind_group(
             binding: 6,
             resource: BindingResource::TextureView(phero_prev_view),
         },
+        BindGroupEntry {
+            binding: 7,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: weights_buf_ref,
+                offset: 0,
+                size: None,
+            }),
+        },
+        BindGroupEntry { binding: 9, resource: phero_ctrl_buffer.binding().unwrap() },
     ];
 
     let bind_group_1 =
         render_device.create_bind_group(None, &pipeline.texture_bind_group_layout, &entries1);
 
     commands.insert_resource(AgentSimImageBindGroups([bind_group_0, bind_group_1]));
+
+    // Brush control uniform for input pass
+    let brush_uniform = crate::resources::BrushControlUniform {
+        target_layer: phero_cfg.brush_target_layer,
+        _mode: 0,
+        _pad: UVec2::ZERO,
+    };
+    let mut brush_uniform_buffer = UniformBuffer::from(&brush_uniform);
+    brush_uniform_buffer.write_buffer(&render_device, &queue);
 
     // Create array-based pheromone bind groups targeting the current ping outputs
     if let Some((env_ping, comp_ping)) = create_phero_array_bind_groups(
@@ -370,8 +368,8 @@ fn prepare_bind_group(
         view_a,
         view_b,
         &global_uniform_buffer,
-        &species_settings.buffer,
         &layer_params.buffer,
+        &brush_uniform_buffer,
     ) {
         commands.insert_resource(crate::resources::PheroArrayEnvBindGroups(env_ping));
         commands.insert_resource(crate::resources::PheroArrayCompositeBindGroups(comp_ping));
@@ -479,6 +477,11 @@ impl render_graph::Node for AgentSimNode {
 
                 let groups_x = SIZE.x.div_ceil(WORKGROUP_SIZE);
                 let groups_y = SIZE.y.div_ceil(WORKGROUP_SIZE);
+                let layer_count = world
+                    .get_resource::<PheromoneConfig>()
+                    .map(|c| c.layer_count)
+                    .unwrap_or(NUM_PHEROMONES as u32)
+                    .max(1);
 
                 let run_config = world.resource::<AgentSimRunConfig>(); // toggles for agents/array passes
 
@@ -502,11 +505,11 @@ impl render_graph::Node for AgentSimNode {
                         pass_arr.set_bind_group(0, &arr_env.0[index], &[]);
                         if run_config.run_diffuse {
                             pass_arr.set_pipeline(diffuse_array);
-                            pass_arr.dispatch_workgroups(groups_x, groups_y, NUM_PHEROMONES as u32);
+                            pass_arr.dispatch_workgroups(groups_x, groups_y, layer_count);
                         }
                         if run_config.run_copy_and_input {
                             pass_arr.set_pipeline(input_array);
-                            pass_arr.dispatch_workgroups(groups_x, groups_y, NUM_PHEROMONES as u32);
+                            pass_arr.dispatch_workgroups(groups_x, groups_y, layer_count);
                         }
                     }
                 }

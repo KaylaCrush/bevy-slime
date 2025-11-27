@@ -11,6 +11,7 @@ use bevy::math::Vec4;
 use bevy::prelude::*;
 use bevy::render::render_resource::{BufferInitDescriptor, BufferUsages};
 use bevy::render::renderer::RenderDevice;
+use crate::resources::{PheromoneConfig, SpeciesLayerWeights};
 
 // Authoring helpers used by the app to assemble `SpeciesSettings` that are
 // uploaded to the GPU. These helpers are intentionally small and tested below.
@@ -56,6 +57,10 @@ pub struct EmitsPheromone {
     pub amount: f32,
 }
 
+// Optional per-species arrays for L-layer sensing weights
+#[derive(Component, Deref, DerefMut)]
+pub struct LayerWeights(pub Vec<f32>);
+
 #[allow(dead_code)]
 pub struct SpeciesAuthoringPlugin;
 
@@ -86,14 +91,13 @@ pub fn build_species_settings_from_components(
         weights -= mask * a.strength;
     }
 
-    // Build per-channel emission
-    let mut emit_v = Vec4::ZERO;
+    // Build emission: single layer index + amount
+    let mut emit_layer = 0u32;
+    let mut emit_amount = 0.0f32;
     if let Some(e) = emit {
-        let mask = channel_to_mask(e.channel);
-        emit_v += mask * e.amount;
+        emit_layer = e.channel;
+        emit_amount = e.amount;
     }
-    // Do not deposit into alpha channel; it's used only for display visibility
-    emit_v.w = 0.0;
 
     SpeciesSettings {
         move_speed: **move_speed,
@@ -103,7 +107,9 @@ pub fn build_species_settings_from_components(
         sensor_size: sensor.size,
         color: **color,
         weights,
-        emit: emit_v,
+        emit_layer,
+        emit_amount,
+        _pad_emit: UVec2::ZERO,
         ..Default::default()
     }
 }
@@ -121,7 +127,8 @@ fn channel_to_mask(channel: u32) -> Vec4 {
 
 // Spawn three default agent species to match the current shader/channel assumptions (RGB)
 pub fn spawn_default_species(mut commands: Commands) {
-    // Red species (channel 0)
+    // With extended layers: 0=hate, 1=love, 2..4 agent-specific
+    // Red species (channel 2)
     commands.spawn((
         AgentSpecies,
         AgentColor(Vec4::new(1.0, 0.0, 0.0, 1.0)),
@@ -132,21 +139,14 @@ pub fn spawn_default_species(mut commands: Commands) {
             offset_dst: 35.0,
             size: 1.0,
         },
-        FollowsPheromone {
-            channel: 0,
-            strength: 1.0,
-        },
-        AvoidsPheromone {
-            channel: 1,
-            strength: 1.0,
-        },
-        EmitsPheromone {
-            channel: 0,
-            amount: 1.0,
-        },
+        FollowsPheromone { channel: 2, strength: 1.0 },
+        AvoidsPheromone { channel: 3, strength: 1.0 },
+        EmitsPheromone { channel: 2, amount: 1.0 },
+        // Layer weights override: [0,0,+1,-1,0]
+        LayerWeights(vec![0.0, 0.0, 1.0, -1.0, 0.0]),
     ));
 
-    // Green species (channel 1)
+    // Green species (channel 3)
     commands.spawn((
         AgentSpecies,
         AgentColor(Vec4::new(0.0, 1.0, 0.0, 1.0)),
@@ -157,21 +157,14 @@ pub fn spawn_default_species(mut commands: Commands) {
             offset_dst: 35.0,
             size: 1.0,
         },
-        FollowsPheromone {
-            channel: 1,
-            strength: 1.0,
-        },
-        AvoidsPheromone {
-            channel: 2,
-            strength: 1.0,
-        },
-        EmitsPheromone {
-            channel: 1,
-            amount: 1.0,
-        },
+        FollowsPheromone { channel: 3, strength: 1.0 },
+        AvoidsPheromone { channel: 4, strength: 1.0 },
+        EmitsPheromone { channel: 3, amount: 1.0 },
+        // Layer weights override: [0,0,0,+1,-1]
+        LayerWeights(vec![0.0, 0.0, 0.0, 1.0, -1.0]),
     ));
 
-    // Blue species (channel 2)
+    // Blue species (channel 4)
     commands.spawn((
         AgentSpecies,
         AgentColor(Vec4::new(0.0, 0.0, 1.0, 1.0)),
@@ -182,18 +175,11 @@ pub fn spawn_default_species(mut commands: Commands) {
             offset_dst: 35.0,
             size: 1.0,
         },
-        FollowsPheromone {
-            channel: 2,
-            strength: 1.0,
-        },
-        AvoidsPheromone {
-            channel: 0,
-            strength: 1.0,
-        },
-        EmitsPheromone {
-            channel: 2,
-            amount: 1.0,
-        },
+        FollowsPheromone { channel: 4, strength: 1.0 },
+        AvoidsPheromone { channel: 2, strength: 1.0 },
+        EmitsPheromone { channel: 4, amount: 1.0 },
+        // Layer weights override: [0,0,-1,0,+1]
+        LayerWeights(vec![0.0, 0.0, -1.0, 0.0, 1.0]),
     ));
 }
 
@@ -203,6 +189,7 @@ pub fn spawn_default_species(mut commands: Commands) {
 pub fn upload_species_to_gpu(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
+    phero_cfg: Res<PheromoneConfig>,
     query: Query<
         (
             &AgentColor,
@@ -212,13 +199,20 @@ pub fn upload_species_to_gpu(
             Option<&FollowsPheromone>,
             Option<&AvoidsPheromone>,
             Option<&EmitsPheromone>,
+            Option<&LayerWeights>,
         ),
         With<AgentSpecies>,
     >,
 ) {
-    // Collect species settings from the query using a helper so the collection
-    // logic can be tested independently of GPU buffer creation.
-    let mut species: Vec<SpeciesSettings> = collect_species_settings_from_refs(query.iter());
+    // Collect species settings and optional extended arrays aligned by index
+    let mut species: Vec<SpeciesSettings> = Vec::new();
+    let mut layer_w: Vec<Option<Vec<f32>>> = Vec::new();
+    for (color, move_speed, turn_speed, sensor, follow, avoid, emit, wext) in query.iter() {
+        species.push(build_species_settings_from_components(
+            color, move_speed, turn_speed, sensor, follow, avoid, emit,
+        ));
+        layer_w.push(wext.map(|v| v.0.clone()));
+    }
 
     if species.is_empty() {
         species = vec![
@@ -234,6 +228,54 @@ pub fn upload_species_to_gpu(
         usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
     });
     commands.insert_resource(crate::resources::SpeciesGpuBuffer { buffer });
+
+    // Build dense extended arrays (weights) sized species_count * L.
+    let layer_count = phero_cfg.layer_count.max(1);
+    let species_count = species.len() as u32;
+    let mut weights: Vec<f32> = vec![0.0; (layer_count * species_count) as usize];
+    for (si, s) in species.iter().enumerate() {
+        let base = (si as u32) * layer_count;
+        // Extended overrides if provided
+        if let Some(w_override) = &layer_w.get(si).and_then(|o| o.as_ref()) {
+            let n = layer_count.min(w_override.len() as u32);
+            for li in 0..n { weights[(base + li) as usize] = w_override[li as usize]; }
+        } else {
+            // Map legacy vec4 weights into the first min(4, L) entries
+            let l4 = layer_count.min(4);
+            if l4 > 0 { weights[(base + 0) as usize] = s.weights.x; }
+            if l4 > 1 { weights[(base + 1) as usize] = s.weights.y; }
+            if l4 > 2 { weights[(base + 2) as usize] = s.weights.z; }
+            if l4 > 3 { weights[(base + 3) as usize] = s.weights.w; }
+        }
+    }
+
+    // Apply universal and paint-only rules
+    let love_set: std::collections::HashSet<u32> = phero_cfg.universal_love_layers.iter().copied().collect();
+    let hate_set: std::collections::HashSet<u32> = phero_cfg.universal_hate_layers.iter().copied().collect();
+    let paint_only_set: std::collections::HashSet<u32> = phero_cfg.paint_only_layers.iter().copied().collect();
+
+    for si in 0..species_count {
+        let base = si * layer_count;
+        for li in 0..layer_count {
+            // universal loved/hated -> override weight regardless of authored species weight
+            if love_set.contains(&li) {
+                weights[(base + li) as usize] = 1.0;
+            }
+            if hate_set.contains(&li) {
+                weights[(base + li) as usize] = -1.0;
+            }
+            // paint-only means agents never deposit there; universal love/hate layers are implicitly paint-only
+            // paint-only enforced by agents deposit path now (per-species emit layer),
+            // weights still apply for sensing. No per-layer emit array used anymore.
+        }
+    }
+
+    let weights_buf = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("Species extended weights"),
+        contents: bytemuck::cast_slice(&weights),
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+    });
+    commands.insert_resource(SpeciesLayerWeights { weights: weights_buf, layer_count, species_count });
 }
 
 /// Collect a `Vec<SpeciesSettings>` from an iterator of component references.
@@ -315,9 +357,9 @@ mod tests {
         // weights: follow on channel 0 (positive), avoid on channel 1 (negative)
         assert!(settings.weights.x > 0.0);
         assert!(settings.weights.y < 0.0);
-        // emit: channel 2 set, alpha must be zero
-        assert!(settings.emit.z > 0.0);
-        assert_eq!(settings.emit.w, 0.0);
+        // emit: single-layer 2 set with amount
+        assert_eq!(settings.emit_layer, 2);
+        assert!(settings.emit_amount > 0.0);
     }
 
     #[test]
@@ -341,10 +383,9 @@ mod tests {
             None,
         );
 
-        // weights should be zero and emit alpha should be zero
+        // weights should be zero and no emission configured
         assert_eq!(settings.weights, Vec4::ZERO);
-        assert_eq!(settings.emit.w, 0.0);
-        assert_eq!(settings.emit, Vec4::ZERO);
+        assert_eq!(settings.emit_amount, 0.0);
     }
 
     #[test]
