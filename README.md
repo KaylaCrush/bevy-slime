@@ -2,8 +2,6 @@
 
 *GPU-accelerated, multi-agent emergent behavior using compute shaders*
 ---
-
-## Demo Video
 [![Ant Sim](https://img.youtube.com/vi/3XrAkhGw1iI/0.jpg)](https://www.youtube.com/watch?v=3XrAkhGw1iI)
 
 ---
