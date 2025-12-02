@@ -1,10 +1,6 @@
 # Ant Pheromone Simulation
 
 *GPU-accelerated, multi-agent emergent behavior using compute shaders*
-
-![simulation-preview](./media/preview.gif)
-*(or embed your YouTube video below)*
-
 ---
 
 ## Demo Video
