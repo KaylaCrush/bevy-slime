@@ -65,7 +65,7 @@ fn handle_input_phero_array(@builtin(global_invocation_id) id: vec3<u32>) {
     if (x >= dims.x || y >= dims.y) { return; }
     let coord = vec2<i32>(i32(x), i32(y));
 
-    // Seed "avoid" pheromone on screen edges using a squircle (hate layer = 0)
+    // Seed "avoid" pheromone on screen edges using a squircle gradient (hate layer = 0)
     let border: f32 = 4.0;
     if (l == 0) {
         // Squircle formula: distance from edge using superellipse with power=4
@@ -76,8 +76,14 @@ fn handle_input_phero_array(@builtin(global_invocation_id) id: vec3<u32>) {
         let nx = cx / rx;
         let ny = cy / ry;
         let squircle_dist = pow(abs(nx), 4.0) + pow(abs(ny), 4.0);
-        if (squircle_dist >= 1.0) {
-            textureStore(next_array, coord, l, vec4<f32>(1.0, 0.0, 0.0, 0.0));
+        // Compute a soft gradient: 0 inside, rising to 1 outside over a band
+        let band = 0.25; // controls gradient thickness
+        let t = clamp((squircle_dist - 1.0) / band, 0.0, 1.0);
+        let g = t * t * (3.0 - 2.0 * t); // smoothstep
+        if (g > 0.0) {
+            let current = textureLoad(next_array, coord, l).x;
+            // Keep the max so diffusion/brush can't be instantly obliterated by border
+            textureStore(next_array, coord, l, vec4<f32>(max(current, g), 0.0, 0.0, 0.0));
         }
     }
 
