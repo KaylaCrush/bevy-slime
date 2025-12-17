@@ -95,54 +95,55 @@ pub fn build_species_settings_from_components(
 // Spawn three default agent species to match the current shader/channel assumptions (RGB)
 pub fn spawn_default_species(mut commands: Commands) {
     // With extended layers: 0=hate, 1=love, 2..4 agent-specific
-    // Red species (channel 2): sprinter (very fast, low turning, narrow sensing)
+    // Red species (channel 2): sprinter (toned down speed, slightly more steering, wider sensing)
     commands.spawn((
         AgentSpecies,
         AgentColor(Vec4::new(1.0, 0.0, 0.0, 1.0)),
-        MoveSpeed(90.0),
-        TurnSpeed(2.0),
+        MoveSpeed(60.0),
+        TurnSpeed(3.5),
         Sensor {
-            angle_degrees: 12.0,
-            offset_dst: 25.0,
-            size: 0.0,
+            angle_degrees: 18.0,
+            offset_dst: 28.0,
+            size: 1.0,
         },
-        EmitsPheromone { channel: 2, amount: 0.6 },
-        // Layer weights override: emphasize its own channel strongly, avoid next
+        EmitsPheromone { channel: 2, amount: 0.5 },
+        // Layer weights override: still favors self, but less extreme; milder avoidance of next, neutral to other
         // [L0 hate, L1 love, L2 self, L3 next, L4 other]
-        LayerWeights(vec![-1.0, 1.0, 1.5, -1.0, 0.2]),
+        LayerWeights(vec![-1.0, 1.0, 1.0, -0.5, 0.0]),
     ));
 
-    // Green species (channel 3): twitchy scout (medium speed, high turning, wide sensing)
+    // Green species (channel 3): twitchy scout (lower speed, very high turning, very wide sensing)
     commands.spawn((
         AgentSpecies,
         AgentColor(Vec4::new(0.0, 1.0, 0.0, 1.0)),
-        MoveSpeed(28.0),
-        TurnSpeed(12.0),
+        MoveSpeed(24.0),
+        TurnSpeed(14.0),
         Sensor {
-            angle_degrees: 60.0,
-            offset_dst: 30.0,
+            angle_degrees: 70.0,
+            offset_dst: 32.0,
             size: 0.0,
         },
-        EmitsPheromone { channel: 3, amount: 1.2 },
-        // Broader sensing with moderate biases
-        LayerWeights(vec![-1.0, 1.0, 0.2, 1.0, -0.6]),
+        EmitsPheromone { channel: 3, amount: 1.0 },
+        // Strong self-follow, strong avoidance of blue, avoidance of purple
+        // [L0 hate, L1 love, L2 purple, L3 green, L4 blue]
+        LayerWeights(vec![-1.0, 1.0, -0.8, 1.3, -0.9]),
     ));
 
-    // Blue species (channel 4): whirl drifter (mid speed, high turning, wide sensing)
+    // Blue species (channel 4): smooth drifter (moderate speed, low turning, very wide sensing, larger sensor area)
     commands.spawn((
         AgentSpecies,
         AgentColor(Vec4::new(0.0, 0.0, 1.0, 1.0)),
-        MoveSpeed(42.0),
-        TurnSpeed(10.0),
+        MoveSpeed(34.0),
+        TurnSpeed(6.0),
         Sensor {
-            angle_degrees: 75.0,
-            offset_dst: 28.0,
-            size: 0.0,
+            angle_degrees: 85.0,
+            offset_dst: 26.0,
+            size: 2.0,
         },
-        EmitsPheromone { channel: 4, amount: 2.0 },
-        // Broader curiosity: attracted to love(1) and self(4), slight avoidance of purple(2)
-        // [L0 hate, L1 love, L2 purple, L3 yellow, L4 blue]
-        LayerWeights(vec![-1.0, 1.0, -0.6, 0.2, 1.1]),
+        EmitsPheromone { channel: 4, amount: 2.2 },
+        // Strong self-follow, mild curiosity to purple, avoids green
+        // [L0 hate, L1 love, L2 purple, L3 green, L4 blue]
+        LayerWeights(vec![-1.0, 1.0, -0.4, -0.8, 1.4]),
     ));
 }
 

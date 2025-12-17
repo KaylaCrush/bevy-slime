@@ -5,8 +5,13 @@
 // - `MouseButtonState` tracks left/right button pressed state for the brush.
 
 use bevy::{input::keyboard, prelude::*};
-use crate::resources::PheromoneConfig;
+use crate::resources::{PheromoneConfig, GlobalUniforms};
 use bevy::input::mouse::MouseWheel;
+use bevy::render::renderer::RenderDevice;
+use crate::agents;
+use crate::pheromones::make_pheromone_array_images;
+use crate::pheromones::PheromoneArrayImages;
+use crate::{SIZE, NUM_AGENTS, NUM_SPECIES};
 
 pub struct InputPlugin;
 impl Plugin for InputPlugin {
@@ -19,6 +24,8 @@ impl Plugin for InputPlugin {
                 handle_keyboard_input,
                 handle_mouse_wheel_layer,
                 handle_brush_hotkeys,
+                handle_species_cycle_hotkey,
+                handle_reset_hotkey,
             ),
         )
         .insert_resource(MouseWorldPos(Vec2::ZERO))
@@ -79,6 +86,17 @@ fn handle_keyboard_input(keyboard_input: Res<ButtonInput<keyboard::KeyCode>>) {
     }
 }
 
+// Press 'C' to cycle species mapping (offset used by agent shader)
+fn handle_species_cycle_hotkey(
+    keyboard_input: Res<ButtonInput<keyboard::KeyCode>>,
+    mut globals: ResMut<crate::resources::GlobalUniforms>,
+) {
+    if keyboard_input.just_pressed(keyboard::KeyCode::KeyC) {
+        let count = globals.species_count.max(1);
+        globals.species_offset = (globals.species_offset + 1) % count;
+    }
+}
+
 // Mouse wheel cycles brush target layer (with wrap)
 fn handle_mouse_wheel_layer(
     mut wheel: MessageReader<MouseWheel>,
@@ -132,4 +150,41 @@ fn handle_brush_hotkeys(
         if v > max_layer { v = max_layer; }
         cfg.brush_target_layer = v;
     }
+}
+
+// Press 'R' to reset simulation: agents reinitialized, pheromones cleared, globals reset
+fn handle_reset_hotkey(
+    keyboard_input: Res<ButtonInput<keyboard::KeyCode>>,
+    mut commands: Commands,
+    render_device: Res<RenderDevice>,
+    mut images: ResMut<Assets<Image>>,
+    phero_cfg: Res<PheromoneConfig>,
+    mut globals: ResMut<GlobalUniforms>,
+    mut mouse_buttons: ResMut<MouseButtonState>,
+) {
+    if !keyboard_input.just_pressed(keyboard::KeyCode::KeyR) {
+        return;
+    }
+    // Re-init agents (positions, angles, species indices)
+    agents::init_agents(
+        &mut commands,
+        &render_device,
+        SIZE,
+        NUM_AGENTS,
+        NUM_SPECIES,
+    );
+
+    // Clear pheromones by allocating fresh array images
+    let layers = phero_cfg.layer_count.max(1);
+    let array_images = make_pheromone_array_images(&mut images, layers);
+    commands.insert_resource::<PheromoneArrayImages>(array_images);
+
+    // Reset globals / input state
+    globals.frame = 0;
+    globals.species_offset = 0;
+    globals.left_button_pressed = 0;
+    globals.right_button_pressed = 0;
+    globals.mouse_position = Vec2::new(-10000.0, -10000.0);
+    mouse_buttons.left_pressed = false;
+    mouse_buttons.right_pressed = false;
 }
